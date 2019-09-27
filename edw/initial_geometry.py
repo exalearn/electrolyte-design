@@ -1,8 +1,10 @@
 """Functions related to generating initial geometries for quantum chemistry codes"""
 
+import numpy as np
 from typing import List
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from sklearn.cluster import AgglomerativeClustering
 
 
 def smiles_to_conformers(smiles: str, n_conformers: int) -> List[str]:
@@ -40,3 +42,44 @@ def optimize_structure(mol: str) -> str:
     while AllChem.MMFFOptimizeMolecule(m) == 1:
         continue
     return Chem.MolToMolBlock(m)
+
+
+def cluster_and_reduce_conformers(confs: List[str], max_cluster_dist=2) -> List[str]:
+    """Cluster the list of conformers and pick only one representative per cluster
+
+    Works by computing the RMS distance between each conformer and using that
+    distance as the tool for clustering
+
+    Args:
+        confs ([str]): List of conformers
+        max_cluster_dist (float): Distance threshold of
+    Returns:
+        ([str]): Reduced list of conformers
+    """
+
+    # Parse all conformer structures
+    mols = [AllChem.MolFromMolBlock(m) for m in confs]
+
+    # Compute the RMS distances
+    dists = np.zeros((len(confs),)*2)
+    for i in range(1, len(dists)):
+        for j in range(i):
+            rms = AllChem.AlignMol(mols[i], mols[j])
+            dists[i, j] = dists[j, i] = rms
+
+    # Get the minimum distance
+    min_rms = dists[np.triu_indices(len(confs), 1)].min()
+    dist_threshold = min_rms * max_cluster_dist
+
+    # Perform the clustering
+    clust = AgglomerativeClustering(n_clusters=None, affinity='precomputed',
+                                    linkage='average', compute_full_tree=True,
+                                    distance_threshold=dist_threshold)
+    clust_ids = clust.fit_predict(dists)
+
+    # Get the unique indices
+    _, uniq_inds = np.unique(clust_ids, return_index=True)
+
+    return [confs[i] for i in uniq_inds]
+
+
