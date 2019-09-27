@@ -1,0 +1,18 @@
+name: edw
+channels:
+  - defaults
+  - conda-forge
+  - rdkit
+dependencies:
+  - python==3.7.4
+  - pymatgen==2019.9.16
+  - custodian==2019.9.23
+  - scikit-learn==0.21.3
+  - matplotlib==3.1.1
+  - rdkit==2019.03.4.0
+  - jupyterlab
+  - psutil
+  - pytest
+  - pip
+  - pip:
+    - -e .
