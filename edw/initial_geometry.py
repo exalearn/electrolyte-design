@@ -38,7 +38,7 @@ def optimize_structure(mol: str) -> str:
         (str): String of the relaxed structure in mol format
     """
 
-    m = Chem.MolFromMolBlock(mol)
+    m = Chem.MolFromMolBlock(mol, removeHs=False)
     while AllChem.MMFFOptimizeMolecule(m) == 1:
         continue
     return Chem.MolToMolBlock(m)
@@ -81,5 +81,3 @@ def cluster_and_reduce_conformers(confs: List[str], max_cluster_dist=2) -> List[
     _, uniq_inds = np.unique(clust_ids, return_index=True)
 
     return [confs[i] for i in uniq_inds]
-
-
