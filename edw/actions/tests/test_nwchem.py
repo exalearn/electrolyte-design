@@ -1,7 +1,7 @@
 """Simple test for NWChem"""
 
-from edw.initial_geometry import smiles_to_conformers
-from edw import nwchem
+from edw.actions.initial_geometry import smiles_to_conformers
+from edw.actions import nwchem
 import os
 
 
