@@ -7,12 +7,13 @@ from rdkit.Chem import AllChem
 from sklearn.cluster import AgglomerativeClustering
 
 
-def smiles_to_conformers(smiles: str, n_conformers: int) -> List[str]:
+def smiles_to_conformers(smiles: str, n_conformers: int, relax: bool=True) -> List[str]:
     """Generate a series of conformers for a molecule
 
     Args:
         smiles (str): SMILES string for molecule of interest
         n_conformers (int): Number of conformers to generate
+        relax (bool): Whether to
     Returns:
         ([str]): List of conformers in Mol format
     """
@@ -25,7 +26,11 @@ def smiles_to_conformers(smiles: str, n_conformers: int) -> List[str]:
     ids = AllChem.EmbedMultipleConfs(m, numConfs=n_conformers,
                                      pruneRmsThresh=1)
 
-    # Print out the conformers in XYZ format
+    # If desired, relax the conformers
+    if relax:
+        AllChem.MMFFOptimizeMoleculeConfs(m)
+
+    # Print out the conformers in Mol format
     return [Chem.MolToMolBlock(m, confId=i) for i in ids]
 
 

@@ -1,5 +1,7 @@
 """Workflow steps related to NWChem"""
 
+from edw.utils import working_directory
+
 from pymatgen.io.nwchem import NwTask, NwInput, NwOutput
 from pymatgen.io.xyz import XYZ
 from pymatgen.core import Molecule
@@ -74,20 +76,20 @@ def run_nwchem(input_file, job_name, executable, run_dir='.'):
         - (str): Path to the error file (will be named `{job_name}.err`)
     """
 
-    # Write the input file to disk
-    input_path = os.path.join(run_dir, f'{job_name}.in')
-    with open(input_path, 'w') as fp:
-        print(input_file, file=fp)
+    with working_directory(run_dir):
+        # Write the input file to disk
+        input_path = f'{job_name}.in'
+        with open(input_path, 'w') as fp:
+            print(input_file, file=fp)
 
-    # Start up NWChem
-    # TODO (wardlt): Do we need to capture stderr? They say all errors go to stdout
-    output_file = os.path.join(run_dir, f'{job_name}.out')
-    error_file = os.path.join(run_dir, f'{job_name}.err')
-    with open(output_file, 'w') as fp, open(error_file, 'w') as fe:
-        result = run(executable + [input_path], stdout=fp, stderr=fe)
+        # Start up NWChem
+        output_file = f'{job_name}.out'
+        error_file = f'{job_name}.err'
+        with open(output_file, 'w') as fp, open(error_file, 'w') as fe:
+            result = run(executable + [input_path], stdout=fp, stderr=fe)
 
-    # Return output
-    return result, output_file, error_file
+        # Return output
+        return result, os.path.join(run_dir, output_file), os.path.join(run_dir, error_file)
 
 
 def read_relaxed_structure(output_file):

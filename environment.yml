@@ -3,6 +3,7 @@ channels:
   - defaults
   - conda-forge
   - rdkit
+  - openbabel
 dependencies:
   - python==3.7.4
   - pymatgen==2019.9.16
@@ -10,9 +11,11 @@ dependencies:
   - scikit-learn==0.21.3
   - matplotlib==3.1.1
   - rdkit==2019.03.4.0
+  - openbabel==2.4.1
   - jupyterlab
   - psutil
   - pytest
   - pip
   - pip:
+    - parsl==0.8.0
     - -e .
