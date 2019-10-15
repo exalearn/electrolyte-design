@@ -15,4 +15,6 @@ def test_methane(tmpdir):
     assert os.path.isfile(result[1])
     assert os.path.isfile(result[2])
 
-    output = nwchem.read_relaxed_structure(result[1])
+    output = nwchem.parse_output(result[1])
+    assert isinstance(output[0], dict)
+    assert isinstance(output[1], list)

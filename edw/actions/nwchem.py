@@ -3,10 +3,11 @@
 from edw.utils import working_directory
 
 from pymatgen.io.nwchem import NwTask, NwInput, NwOutput
-from pymatgen.io.xyz import XYZ
 from pymatgen.core import Molecule
 from subprocess import run
 from io import StringIO
+import cclib
+import json
 import os
 
 
@@ -92,33 +93,29 @@ def run_nwchem(input_file, job_name, executable, run_dir='.'):
         return result, os.path.join(run_dir, output_file), os.path.join(run_dir, error_file)
 
 
-def read_relaxed_structure(output_file):
-    """Read the relaxed structure and energy of a molecule from a relaxation
+def parse_output(output_file):
+    """Parse the output file
 
     Args:
         output_file (str): Path to the output file
     Returns:
-        - (bool) Whether the structure is converged
-        - (str) Relaxed structure in XYZ format
-        - (float) Total energy was structure
+        - (dict) Output from CCLib. ``None`` if parsing fails.
+        - ([(dict])) Task information and errors
     """
 
-    # Parse the output file
+    # Parse the output file with cclib
+    cclib_out = None
+    try:
+        ccobj = cclib.io.ccopen(output_file).parse()
+        cclib_out = json.loads(cclib.io.ccwrite(ccobj, 'json'))
+    except BaseException:
+        pass
+
+    # Parse the task information with pymatgen
+    accepted_keys = ['job_type', 'errors', 'task_time']
     output = NwOutput(output_file)
-
-    # Make sure it is a relaxation calculation
-    if len(output.data) != 1 \
-            or output.data[0]['job_type'] != 'NWChem Geometry Optimization':
-        raise ValueError('This calculation was not a geometry relaxation')
-    relax_task_data = output.data[0]
-
-    # Check for errors
-    converged = len(relax_task_data['errors']) == 0
-
-    # Get the molecular structure from the last timestep
-    last_strc = str(XYZ(relax_task_data['molecules'][-1]))
-
-    # Get the energy
-    energy = relax_task_data['energies'][-1]
-
-    return converged, last_strc, energy
+    task_out = []
+    for task in output.data:
+        subset = [(k, v) for k, v in task.items() if k in accepted_keys]
+        task_out.append(subset)
+    return cclib_out, task_out

@@ -2,7 +2,7 @@
 
 from parsl import python_app
 from tempfile import TemporaryDirectory
-from edw.actions import initial_geometry, nwchem
+from edw.actions import initial_geometry, nwchem, cclib
 from concurrent.futures import as_completed
 from typing import List, Tuple
 
@@ -27,7 +27,9 @@ def relax_structure(tag: str, structure: str, nwchem_cmd: List[str]) -> Tuple[st
         input_file = nwchem.make_input_file(structure, theory='dft')
         result = nwchem.run_nwchem(input_file, 'nw', nwchem_cmd, run_dir=td)
 
-        conv, strc, energy = nwchem.read_relaxed_structure(result[1])
+        # Parse the output
+        cclib_out, pmg_out = nwchem.parse_output(result[1])
+        strc = cclib.get_relaxed_structure(cclib_out)
         return strc
 
 
@@ -52,11 +54,13 @@ def relax_conformers(confs, nwchem_cmd):
 
 
 @python_app(executors=['local_threads'])
-def collect_conformers(smiles, conf_jobs):
-    """Collect the conformers and render them to a single JSON doc"""
+def collect_conformers(inchi_key, conf_jobs) -> Tuple[str, List[str]]:
+    """Collect the conformers for a certain calculation
+
+    Args:
+        inchi_key (str): InChI key for a molecule
+        conf_jobs (AppFuture): Futures for the jobs running
+    """
 
     relaxed_confs = [s.result() for s in as_completed(conf_jobs)]
-    return {
-        'smiles': smiles,
-        'conformers': relaxed_confs
-    }
+    return inchi_key, relaxed_confs
