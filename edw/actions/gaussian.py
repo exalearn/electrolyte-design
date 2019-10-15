@@ -2,7 +2,7 @@
 
 from edw.utils import working_directory, mol_to_xyz
 
-from pymatgen.io.nwchem import NwTask, NwInput, NwOutput
+from pymatgen.io.gaussian import GaussianInput, GaussianOutput
 from pymatgen.core import Molecule
 from subprocess import run
 import cclib
@@ -11,7 +11,7 @@ import os
 
 
 def make_input_file(mol: str, **kwargs):
-    """Make input files for NWChem calculation, currently hard-wired to relaxation
+    """Make input file for Gaussian file
 
     Keyword arguments are passed to the NwChem task creation
 
@@ -25,16 +25,11 @@ def make_input_file(mol: str, **kwargs):
     mol_obj = Molecule.from_str(mol_to_xyz(mol), 'xyz')
 
     # Generate the list of tasks
-    task = NwTask.from_molecule(mol_obj, **kwargs)  # Just one for now
-
-    # Make the input file
-    nw_input = NwInput(mol_obj, tasks=[task])
-
-    return str(nw_input)
+    return GaussianInput(mol_obj, **kwargs).to_string()
 
 
 def run_nwchem(input_file, job_name, executable, run_dir='.'):
-    """Perform an NWChem calculation return the output file
+    """Perform an Gaussian calculation return the output file
 
     Assumes the calculation is to be started in the current working directory,
     and the job_name is unique. That is, if a files from the current `job_name`
@@ -44,7 +39,7 @@ def run_nwchem(input_file, job_name, executable, run_dir='.'):
     Args:
         input_file (str): Input file as a string
         job_name (str): Human-friendly name for the job
-        executable ([str]): Invocation for NWChem (e.g., ['mpirun', 'nwchem'])
+        executable ([str]): Invocation for Gaussian (e.g., ['mpirun', 'nwchem'])
         run_dir (str): Directory in which to run the job
     Return:
         - (int): Return code from NWChem
@@ -75,7 +70,7 @@ def parse_output(output_file):
         output_file (str): Path to the output file
     Returns:
         - (dict) Output from CCLib. ``None`` if parsing fails.
-        - ([(dict])) Task information and errors
+        - ([str]) List of errors
     """
 
     # Parse the output file with cclib
@@ -86,11 +81,6 @@ def parse_output(output_file):
     except BaseException:
         pass
 
-    # Parse the task information with pymatgen
-    accepted_keys = ['job_type', 'errors', 'task_time']
-    output = NwOutput(output_file)
-    task_out = []
-    for task in output.data:
-        subset = [(k, v) for k, v in task.items() if k in accepted_keys]
-        task_out.append(subset)
-    return cclib_out, task_out
+    # Parse the error information with
+    output = GaussianOutput(output_file)
+    return cclib_out, output.errors
