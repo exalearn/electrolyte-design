@@ -12,10 +12,14 @@ dependencies:
   - matplotlib==3.1.1
   - rdkit==2019.03.4.0
   - openbabel==2.4.1
+  - qcengine==0.11.0
+  - mongodb==4.0.3
+  - pymongo==3.9.0
   - jupyterlab
   - psutil
   - pytest
   - pip
   - pip:
     - parsl==0.8.0
+    - cclib==1.6.2
     - -e .
