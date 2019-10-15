@@ -7,7 +7,22 @@ from rdkit.Chem import AllChem
 from sklearn.cluster import AgglomerativeClustering
 
 
-def smiles_to_conformers(smiles: str, n_conformers: int, relax: bool=True) -> List[str]:
+def compute_inchi_key(smiles: str) -> str:
+    """Generate the InChI key for a molecule
+
+    This will be used as an ID for the molecule in eventual databases
+
+    Args:
+        smiles (str): SMILES string for a molecule
+    Returns:
+         (str): InChI key
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    return Chem.MolToInchiKey(mol)
+
+
+def smiles_to_conformers(smiles: str, n_conformers: int,
+                         relax: bool = True) -> List[str]:
     """Generate a series of conformers for a molecule
 
     Args:
