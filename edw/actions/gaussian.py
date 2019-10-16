@@ -1,7 +1,6 @@
 """Workflow steps related to NWChem"""
 
 from edw.utils import working_directory
-from edw.actions.geometry import mol_to_xyz
 
 from pymatgen.io.gaussian import GaussianInput, GaussianOutput
 from pymatgen.core import Molecule
@@ -23,7 +22,7 @@ def make_input_file(mol: str, **kwargs):
     """
 
     # Parse the molecule
-    mol_obj = Molecule.from_str(mol_to_xyz(mol), 'xyz')
+    mol_obj = Molecule.from_str(mol, 'xyz')
 
     # Generate the list of tasks
     return GaussianInput(mol_obj, **kwargs).to_string()
@@ -57,7 +56,7 @@ def run_gaussian(input_file, job_name, executable, run_dir='.'):
         # Start up NWChem
         output_file = f'{job_name}.out'
         error_file = f'{job_name}.err'
-        with open(output_file, 'w') as fp, open(error_file, 'w') as fe, open(input_file) as fi:
+        with open(output_file, 'w') as fp, open(error_file, 'w') as fe, open(input_path) as fi:
             result = run(executable, stdin=fi, stdout=fp, stderr=fe)
 
         # Return output
