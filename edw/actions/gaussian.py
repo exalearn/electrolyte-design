@@ -29,7 +29,7 @@ def make_input_file(mol: str, **kwargs):
     return GaussianInput(mol_obj, **kwargs).to_string()
 
 
-def run_nwchem(input_file, job_name, executable, run_dir='.'):
+def run_gaussian(input_file, job_name, executable, run_dir='.'):
     """Perform an Gaussian calculation return the output file
 
     Assumes the calculation is to be started in the current working directory,
@@ -57,8 +57,8 @@ def run_nwchem(input_file, job_name, executable, run_dir='.'):
         # Start up NWChem
         output_file = f'{job_name}.out'
         error_file = f'{job_name}.err'
-        with open(output_file, 'w') as fp, open(error_file, 'w') as fe:
-            result = run(executable + [input_path], stdout=fp, stderr=fe)
+        with open(output_file, 'w') as fp, open(error_file, 'w') as fe, open(input_file) as fi:
+            result = run(executable, stdin=fi, stdout=fp, stderr=fe)
 
         # Return output
         return result, os.path.join(run_dir, output_file), os.path.join(run_dir, error_file)

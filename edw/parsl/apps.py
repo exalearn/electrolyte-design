@@ -2,12 +2,25 @@
 
 from parsl import python_app
 from tempfile import TemporaryDirectory
-from edw.actions import geometry, nwchem, cclib
+from edw.actions import geometry, nwchem, cclib, gaussian
 from concurrent.futures import as_completed
-from typing import List, Tuple
+from typing import List, Tuple, Any
 
 __all__ = ['relax_nwchem', 'relax_gaussian', 'relax_conformers',
-           'smiles_to_conformers', 'collect_conformers']
+           'smiles_to_conformers', 'collect_conformers', 'match_future_with_inputs']
+
+
+@python_app(executors=['local_threads'])
+def match_future_with_inputs(inputs: Any, future) -> Tuple[Any, Any]:
+    """Used as the last step of a workflow for easier tracking
+
+    Args:
+        inputs (Any): Some marker of the inputs to a workflow
+        future (AppFuture): Output from the workflow
+    Returns:
+        inputs, result object
+    """
+    return inputs, future.result()
 
 
 @python_app
@@ -25,9 +38,28 @@ def smiles_to_conformers(smiles: str, n: int) -> List[str]:
 
 
 @python_app
-def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str]) -> str:
-    """Use Gaussian to relax a structure with """
+def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
+                   **kwargs) -> str:
+    """Use Gaussian to relax a structure
 
+    Args:
+        tag (str): Name of the calculation
+        structure (str): Structure in XYZ format
+        gaussian_cmd ([str]): Command to start Gaussian
+    Keyword Args:
+        Passed to Gaussian input file creation
+    Returns:
+        (str) Relaxed molecule in XYZ format
+    """
+
+    with TemporaryDirectory(prefix=tag) as td:
+        input_file = gaussian.make_input_file(structure, **kwargs)
+        result = gaussian.run_gaussian(input_file, 'gaussian', gaussian_cmd, run_dir=td)
+
+        # Parse the output
+        cclib_out, pmg_out = gaussian.parse_output(result[1])
+        strc = cclib.get_relaxed_structure(cclib_out)
+        return strc
 
 @python_app
 def relax_nwchem(tag: str, structure: str, nwchem_cmd: List[str]) -> str:
