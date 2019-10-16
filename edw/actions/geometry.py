@@ -1,4 +1,5 @@
 """Functions related to generating initial geometries for quantum chemistry codes"""
+from io import StringIO
 
 import numpy as np
 from typing import List
@@ -101,3 +102,29 @@ def cluster_and_reduce_conformers(confs: List[str], max_cluster_dist=2) -> List[
     _, uniq_inds = np.unique(clust_ids, return_index=True)
 
     return [confs[i] for i in uniq_inds]
+
+
+def mol_to_xyz(mol: str) -> str:
+    """Convert a molecule block to XYZ format
+
+    Mol block is used heavily in RDKit, but we are going to use XYZ as a common language
+
+    Args:
+        mol (str): Molecule in mol format
+    Returns:
+        (str): Molecule rendered to XYZ
+    """
+
+    # Parse with RDKit
+    lines = mol.split("\n")
+    n_atoms = lines[3].split()[0]
+    atoms = lines[3:4+int(n_atoms)]
+
+    # Write out the XYZ file
+    output = StringIO()
+    print(n_atoms, file=output)
+    for atom in atoms:
+        values = atom.split()
+        print(values[3], *values[:3], file=output)
+
+    return output.getvalue()

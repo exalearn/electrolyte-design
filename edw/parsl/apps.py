@@ -2,25 +2,43 @@
 
 from parsl import python_app
 from tempfile import TemporaryDirectory
-from edw.actions import initial_geometry, nwchem, cclib
+from edw.actions import geometry, nwchem, cclib
 from concurrent.futures import as_completed
 from typing import List, Tuple
 
-__all__ = ['relax_structure', 'relax_conformers', 'smiles_to_conformers', 'collect_conformers']
-
-
-# Simple wrappers over actions defined elsewhere
-smiles_to_conformers = python_app(initial_geometry.smiles_to_conformers)
+__all__ = ['relax_nwchem', 'relax_gaussian', 'relax_conformers',
+           'smiles_to_conformers', 'collect_conformers']
 
 
 @python_app
-def relax_structure(tag: str, structure: str, nwchem_cmd: List[str]) -> Tuple[str, str]:
+def smiles_to_conformers(smiles: str, n: int) -> List[str]:
+    """Generate initial conformers for a molecule
+
+    Args:
+        smiles (str): SMILES string of a molecule
+        n (int): Number of conformers to generate
+    Returns:
+        ([str]) Conformers in XYZ format
+    """
+    confs = geometry.smiles_to_conformers(smiles, n_conformers=n)
+    return [geometry.mol_to_xyz(m) for m in confs]
+
+
+@python_app
+def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str]) -> str:
+    """Use Gaussian to relax a structure with """
+
+
+@python_app
+def relax_nwchem(tag: str, structure: str, nwchem_cmd: List[str]) -> str:
     """Relax a structure with NWChem and return the output structure
 
     Args:
         tag (str): Name of the calculation
-        structure (str): Structure in Mol format
+        structure (str): Structure in XYZ format
         nwchem_cmd ([str]): Command to issue NWChem
+    Returns:
+        (str) Relaxed molecule in XYZ format
     """
 
     with TemporaryDirectory(prefix=tag) as td:
@@ -48,7 +66,7 @@ def relax_conformers(confs, nwchem_cmd):
     jobs = []
     for i, conf in enumerate(confs):
         tag = f'c{i}'
-        jobs.append(relax_structure(tag, conf, nwchem_cmd))
+        jobs.append(relax_nwchem(tag, conf, nwchem_cmd))
 
     return jobs
 

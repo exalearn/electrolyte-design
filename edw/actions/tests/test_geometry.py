@@ -1,5 +1,5 @@
-from edw.actions.initial_geometry import (smiles_to_conformers, optimize_structure,
-                                          cluster_and_reduce_conformers)
+from edw.actions.geometry import (smiles_to_conformers, optimize_structure,
+                                  cluster_and_reduce_conformers)
 
 
 def test_methane():

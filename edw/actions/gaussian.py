@@ -1,6 +1,7 @@
 """Workflow steps related to NWChem"""
 
-from edw.utils import working_directory, mol_to_xyz
+from edw.utils import working_directory
+from edw.actions.geometry import mol_to_xyz
 
 from pymatgen.io.gaussian import GaussianInput, GaussianOutput
 from pymatgen.core import Molecule

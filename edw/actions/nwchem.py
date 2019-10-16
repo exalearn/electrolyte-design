@@ -1,6 +1,7 @@
 """Workflow steps related to NWChem"""
 
-from edw.utils import working_directory, mol_to_xyz
+from edw.utils import working_directory
+from edw.actions.geometry import mol_to_xyz
 
 from pymatgen.io.nwchem import NwTask, NwInput, NwOutput
 from pymatgen.core import Molecule
@@ -16,13 +17,13 @@ def make_input_file(mol: str, **kwargs):
     Keyword arguments are passed to the NwChem task creation
 
     Args:
-        mol (str): Molecule to be evaluated in Mol format
+        mol (str): Molecule to be evaluated in XYZ format
     Returns:
         (str): Input file for the NWChem run
     """
 
     # Parse the molecule
-    mol_obj = Molecule.from_str(mol_to_xyz(mol), 'xyz')
+    mol_obj = Molecule.from_str(mol, 'xyz')
 
     # Generate the list of tasks
     task = NwTask.from_molecule(mol_obj, **kwargs)  # Just one for now

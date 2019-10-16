@@ -1,12 +1,13 @@
 """Simple test for NWChem"""
 
-from edw.actions.initial_geometry import smiles_to_conformers
+from edw.actions.geometry import smiles_to_conformers, mol_to_xyz
 from edw.actions import nwchem
 import os
 
 
 def test_methane(tmpdir):
     methane = smiles_to_conformers('C', 1)[0]
+    methane = mol_to_xyz(methane)
     input_file = nwchem.make_input_file(methane, theory='dft')
     result = nwchem.run_nwchem(input_file, 'methane', ['mpirun', '-n',
                                                        '1', 'nwchem'],
