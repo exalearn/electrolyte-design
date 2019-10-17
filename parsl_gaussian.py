@@ -23,7 +23,7 @@ config = Config(
             provider=SlurmProvider(
                 partition='bdwall',
                 launcher=SrunLauncher(),
-                nodes_per_block=1,
+                nodes_per_block=4,
                 init_blocks=1,
                 max_blocks=1,
                 worker_init='''
@@ -34,7 +34,7 @@ export GAUSS_CDEF=0-35
 export GAUSS_MDEF=100GB
 export GAUSS_SDEF=ssh
 export GAUSS_LFLAGS="-vv"''',
-               walltime="0:15:00"
+               walltime="1:00:00"
             )
         )
     ]
@@ -56,7 +56,7 @@ for app_name in apps.__all__:
 
 # Workload
 data = pd.read_json('qm9.jsonld', lines=True)
-data = data.sample(1)
+data = data.iloc[:8]
 
 # Assemble the workflow
 jobs = []
@@ -67,5 +67,13 @@ for rid, row in tqdm(data.iterrows(), desc='Submitted'):
         data = apps.match_future_with_inputs((rid, charge), charged_calc)
         jobs.append(data)
 
-for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
-    print(j.result())
+with open('qm9-charged.jsonld', 'a') as fp:
+    for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
+        tag, result = j.result()
+
+        # Record molecule information
+        result['mol_id'] = tag[0]
+        result['charge'] = tag[1]
+
+        # Write it to disk
+        print(json.dumps(result), file=fp)

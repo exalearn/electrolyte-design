@@ -70,7 +70,7 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
             'xyz': cclib.get_relaxed_structure(cclib_out),
             'complete': cclib_out['optimization']['done'],
             'scf_energy': cclib_out['optimization']['scf']['scf energies'][-1],
-            'frequencies': cclib_out['vibrations']['freqencies']
+            'frequencies': cclib_out['vibrations']['frequencies']
         }
 
 @python_app
