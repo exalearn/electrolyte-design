@@ -62,6 +62,10 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
                                               **kwargs)
         result = gaussian.run_gaussian(input_file, 'gaussian', gaussian_cmd, run_dir=td)
 
+        # Read in the output file
+        with open(result[1]) as fp:
+            output_file = fp.read()
+
         # Parse the output
         cclib_out, pmg_out = gaussian.parse_output(result[1])
 
@@ -70,7 +74,8 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
             'xyz': cclib.get_relaxed_structure(cclib_out),
             'complete': cclib_out['optimization']['done'],
             'scf_energy': cclib_out['optimization']['scf']['scf energies'][-1],
-            'frequencies': cclib_out['vibrations']['frequencies']
+            'frequencies': cclib_out['vibrations']['frequencies'],
+            'output_file': output_file
         }
 
 @python_app
