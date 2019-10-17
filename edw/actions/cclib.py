@@ -17,11 +17,11 @@ def get_relaxed_structure(output: dict) -> str:
     """
 
     # Get the element format
-    Z = output['atoms']['elements']['numbers']
+    Z = output['atoms']['elements']['number']
     symbols = [Element.from_Z(z).symbol for z in Z]
 
     # Get the coordinates
-    coords = np.reshape(output['atoms']['coords']['3d'], (None, 3))
+    coords = np.reshape(output['atoms']['coords']['3d'], (-1, 3))
 
     # Print in XYZ format
     output = StringIO()
