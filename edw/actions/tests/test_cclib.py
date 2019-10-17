@@ -1,15 +1,16 @@
-from edw.actions import cclib, gaussian
+from edw.actions import cclib
 from pymatgen.io.xyz import XYZ
 from pytest import fixture
+import json
 import os
 
 
 @fixture
-def cc_data():
+def cc_data() -> dict:
     path = os.path.dirname(__file__)
-    outfile_path = os.path.join(path, 'files', 'g16', 'methane.out')
-    cc_data, _ = gaussian.parse_output(outfile_path)
-    return cc_data
+    outfile_path = os.path.join(path, 'files', 'g16', 'methane.json')
+    with open(outfile_path) as fp:
+        return json.load(fp)
 
 
 def test_relaxed_structure(cc_data):

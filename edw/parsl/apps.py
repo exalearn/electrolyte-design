@@ -39,8 +39,8 @@ def smiles_to_conformers(smiles: str, n: int) -> List[str]:
 
 @python_app
 def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
-                   **kwargs) -> str:
-    """Use Gaussian to relax a structure
+                   **kwargs) -> dict:
+    """Use Gaussian to relax a structure and compute frequencies while at it
 
     Args:
         tag (str): Name of the calculation
@@ -49,17 +49,29 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
     Keyword Args:
         Passed to Gaussian input file creation
     Returns:
-        (str) Relaxed molecule in XYZ format
+        (dict) Data from relaxation calculation including
+            'xyz': XYZ coordinates of relaxed structure
+            'complete': Whether the relaxation is fully converged
+            'scf_energy': Electronic energy (eV)
+            'frequencies': Vibrational frequencies
     """
 
     with TemporaryDirectory(prefix=tag) as td:
-        input_file = gaussian.make_input_file(structure, **kwargs)
+        input_file = gaussian.make_input_file(structure,
+                                              route_parameters={'OPT': 'Tight', 'Freq': ''},
+                                              **kwargs)
         result = gaussian.run_gaussian(input_file, 'gaussian', gaussian_cmd, run_dir=td)
 
         # Parse the output
         cclib_out, pmg_out = gaussian.parse_output(result[1])
-        strc = cclib.get_relaxed_structure(cclib_out)
-        return strc
+
+        # Return the parsed results
+        return {
+            'xyz': cclib.get_relaxed_structure(cclib_out),
+            'complete': cclib_out['optimization']['done'],
+            'scf_energy': cclib_out['scf']['scf energies'][-1],
+            'frequencies': cclib_out['vibrations']['freqencies']
+        }
 
 @python_app
 def relax_nwchem(tag: str, structure: str, nwchem_cmd: List[str]) -> str:
