@@ -18,9 +18,9 @@ def match_future_with_inputs(inputs: Any, future) -> Tuple[Any, Any]:
         inputs (Any): Some marker of the inputs to a workflow
         future (AppFuture): Output from the workflow
     Returns:
-        inputs, result object
+        inputs, result
     """
-    return inputs, future.result()
+    return inputs, future
 
 
 @python_app
