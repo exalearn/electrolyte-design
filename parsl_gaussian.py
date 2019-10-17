@@ -63,8 +63,7 @@ jobs = []
 for rid, row in tqdm(data.iterrows(), desc='Submitted'):
     for charge in [-1, 1]:
         charged_calc = apps.relax_gaussian(str(rid), row['xyz'], gaussian_cmd,
-                                           charge=charge, functional='B3LYP',
-                                           route_parameters={'OPT': 'Tight'})
+                                           charge=charge, functional='B3LYP')
         data = apps.match_future_with_inputs((rid, charge), charged_calc)
         jobs.append(data)
 
