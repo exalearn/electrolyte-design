@@ -11,7 +11,7 @@ import os
 
 
 def make_input_file(mol: str, **kwargs):
-    """Make input file for Gaussian file
+    """Make a simple input file for Gaussian
 
     Keyword arguments are passed to the NwChem task creation
 
@@ -26,6 +26,99 @@ def make_input_file(mol: str, **kwargs):
 
     # Generate the list of tasks
     return GaussianInput(mol_obj, **kwargs).to_string()
+
+
+def make_robust_relaxation_input(mol: str, functional: str = 'b3lyp',
+                                 basis_set: str = '6-31G(2df,p)',
+                                 charge=0, **kwargs) -> str:
+    """Relaxation strategy that should deal with metastable molecules.
+
+    Follows the procedure:
+        1. SCF calculation where stability of wavefunctions is checked
+        2. Frequency calculation, loading result from a checkpoint
+        3. Optimization, where we read the force constants in Cartesian coordinates
+        4. Frequency calculation, using the fully-relaxed geometry
+
+    These are chained together in a multistep input file
+
+    Args:
+        mol (str): Unrelaxed molecule in XYZ format
+        functional (str): QC method to use for calculation
+        basis_set (str): Name of desired basis set
+        charge (int): Charge on the molecule
+    Returns:
+        (str): Multi-step input file
+    """
+
+    # Parse the molecule
+    mol_obj = Molecule.from_str(mol, 'xyz')
+    n_electrons = mol_obj.nelectrons
+    spin_multiplicity = 1 if n_electrons % 2 == 0 else 2
+
+    # Make the first step: an SCF calculation
+    link0_params = {'%chk': 'checkpoint.chk'}
+    input_file = GaussianInput(mol_obj, functional=functional,
+                               basis_set=basis_set, charge=charge,
+                               spin_multiplicity=spin_multiplicity,
+                               route_parameters={'stable': 'opt',
+                                                 'scf': {'direct': None,
+                                                         'xqc': None}},
+                               link0_parameters=link0_params,
+                               **kwargs).to_string().strip()
+
+    # Make the second step (frequency calculation)
+    #  The geometry gets read from the checkpoint
+    next_step = GaussianInput(None, functional=functional, basis_set=basis_set,
+                              spin_multiplicity=spin_multiplicity, charge=charge,
+                              route_parameters={'freq': None,
+                                                'geom': 'allcheck',
+                                                'guess': 'check',
+                                                'scf': {
+                                                    'direct': None,
+                                                    'xqc': None,
+                                                    'maxcyc': '500'
+                                                }},
+                              link0_parameters=link0_params,
+                              **kwargs).to_string().strip()
+
+    input_file += f'\n--link1--\n{next_step}\n'
+
+    # Make the geometry optimization step
+    next_step = GaussianInput(None, functional=functional, basis_set=basis_set,
+                              spin_multiplicity=spin_multiplicity, charge=charge,
+                              route_parameters={'geom': 'allcheck',
+                                                'guess': 'check',
+                                                'opt': {
+                                                    'rcfc': None,
+                                                    'maxcyc': 100
+                                                },
+                                                'scf': {
+                                                    'direct': None,
+                                                    'xqc': None,
+                                                    'maxcyc': '500'
+                                                }},
+                              link0_parameters=link0_params,
+                              **kwargs).to_string().strip()
+
+    input_file += f'\n--link1--\n{next_step}\n'
+
+    # Make the frequency optimization step
+    next_step = GaussianInput(None, functional=functional, basis_set=basis_set,
+                              spin_multiplicity=spin_multiplicity, charge=charge,
+                              route_parameters={'geom': 'allcheck',
+                                                'guess': 'check',
+                                                'freq': None,
+                                                'scf': {
+                                                    'direct': None,
+                                                    'xqc': None,
+                                                    'maxcyc': '500'
+                                                }},
+                              link0_parameters=link0_params,
+                              **kwargs).to_string().strip()
+
+    input_file += f'\n--link1--\n{next_step}\n'
+
+    return input_file
 
 
 def run_gaussian(input_file, job_name, executable, run_dir='.'):
