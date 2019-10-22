@@ -4,13 +4,26 @@ from parsl.launchers import SrunLauncher
 from parsl.addresses import address_by_hostname
 from parsl.config import Config
 from concurrent.futures import as_completed
+from pymongo import MongoClient
+from edw.actions import mongo
 from edw.parsl import apps
+from gridfs import GridFS
 from tqdm import tqdm
 import pandas as pd
+import argparse
 import parsl
 import json
 
-# Define how to deal with Gaussian
+
+# Parse user arguments
+arg_parser = argparse.ArgumentParser()
+arg_parser.add_argument('--dry-run', help='Whether to just get workload',
+                        action='store_true', default=False)
+arg_parser.add_argument('--mongo-host', help='Hostname for the MongoDB',
+                        default='localhost', type=str)
+args = arg_parser.parse_args()
+
+# Define how to launch Gaussian
 gaussian_cmd = ['g16']
 
 # Make a executor
@@ -40,6 +53,28 @@ export GAUSS_LFLAGS="-vv"''',
     ]
 )
 
+# Connect to MongoDB
+client = MongoClient(args.mongo_host)
+gridfs = GridFS(client.get_database('jcesr'))
+collection = mongo.initialize_collection(client)
+
+# Get the workload
+query = {
+    'subset': 'holdout',
+    'geometry.oxidized': {'$exists': False},
+    'geometry.reduced': {'$exists': False}
+}
+projection = ['inchi_key', 'geometry.neutral']
+n_records = collection.count_documents(query)
+cursor = collection.find(query, projection)
+
+if args.dry_run:
+    print(f'Found {n_records} records')
+    next_record = cursor.next()
+    next_record.pop('_id')
+    print(f'First record:\n{next_record}')
+    exit()
+
 # Add local threads to the config
 config.executors.append(ThreadPoolExecutor(label='local_threads'))
 
@@ -54,26 +89,22 @@ for app_name in apps.__all__:
         app.executors = worker_execs
         print(f'Assigned app {app_name} to executors: {app.executors}')
 
-# Workload
-data = pd.read_json('qm9.jsonld', lines=True)
-data = data.iloc[:8]
 
 # Assemble the workflow
 jobs = []
-for rid, row in tqdm(data.iterrows(), desc='Submitted'):
+for record in tqdm(cursor, desc='Submitted', total=n_records):
+    rid = record['inchi_key']
     for charge in [-1, 1]:
-        charged_calc = apps.relax_gaussian(str(rid), row['xyz'], gaussian_cmd,
-                                           charge=charge, functional='B3LYP')
+        charged_calc = apps.relax_gaussian(str(rid), record['geometry']['neutral'],
+                                           gaussian_cmd, charge=charge, functional='B3LYP')
         data = apps.match_future_with_inputs((rid, charge), charged_calc)
         jobs.append(data)
 
 with open('qm9-charged.jsonld', 'a') as fp:
     for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
-        tag, result = j.result()
+        inchi_key, result = j.result()
 
-        # Record molecule information
-        result['mol_id'] = tag[0]
-        result['charge'] = tag[1]
-
-        # Write it to disk
-        print(json.dumps(result), file=fp)
+        # Store the calculation results
+        mongo.add_calculation(collection, gridfs, inchi_key, 'oxidized_b3lyp',
+                              result['input_file'], result['output_file'], 'Gaussian',
+                              result['successful'])

@@ -2,9 +2,21 @@
 
 Documentation of cclib record format: https://cclib.github.io/data.html"""
 
+from cclib.io import ccread, CJSONWriter
 from pymatgen.core import Element
 from io import StringIO
 import numpy as np
+
+
+def get_chemical_json(output_file: str) -> dict:
+    """Parse a chemical json file from an output file
+
+    Args:
+        output_file (str): Content of an output file
+    """
+
+    ccdata = ccread(StringIO(output_file))
+    return CJSONWriter(ccdata).as_dict()
 
 
 def get_relaxed_structure(output: dict) -> str:

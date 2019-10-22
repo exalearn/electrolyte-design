@@ -1,10 +1,11 @@
-"""Workflow steps related to NWChem"""
+"""Workflow steps related to Gaussian"""
 
 from edw.utils import working_directory
 
 from pymatgen.io.gaussian import GaussianInput, GaussianOutput
 from pymatgen.core import Molecule
 from subprocess import run
+from typing import Tuple
 import cclib
 import json
 import os
@@ -121,7 +122,7 @@ def make_robust_relaxation_input(mol: str, functional: str = 'b3lyp',
     return input_file
 
 
-def run_gaussian(input_file, job_name, executable, run_dir='.'):
+def run_gaussian(input_file, job_name, executable, run_dir='.') -> Tuple[int, str, str]:
     """Perform an Gaussian calculation return the output file
 
     Assumes the calculation is to be started in the current working directory,
