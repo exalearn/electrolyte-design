@@ -109,11 +109,12 @@ def add_calculation(collection: Collection, gridfs: GridFS,
     # Make the update record
     update_cmd = {
         '$set': {
-            f'calculations.{name}': {
+            f'calculation.{name}': {
                 'input_file': infile_id,
                 'output_file': outfile_id,
                 'code': code,
-                'completed': completed
+                'completed': completed,
+                'added': datetime.now()
             }
         }
     }
@@ -134,7 +135,7 @@ def add_geometry(collection: Collection, inchi_key: str, name: str, xyz: str):
 
     update_cmd = {
         "$set": {
-            f'geometries.{name}': xyz
+            f'geometry.{name}': xyz
         }
     }
     collection.update_one(filter={'inchi_key': inchi_key}, update=update_cmd)
@@ -153,7 +154,7 @@ def add_property(collection: Collection, inchi_key: str, name: str, level: str, 
 
     update_cmd = {
         "$set": {
-            f'properties.{name}.{level}': value
+            f'property.{name}.{level}': value
         }
     }
     collection.update_one(filter={'inchi_key': inchi_key}, update=update_cmd)

@@ -33,11 +33,7 @@
       "type": "string",
       "description": "Datetime this entry was added to the collection"
     },
-    "updated": {
-      "type": "string",
-      "description": "Datetime this entry was last updated"
-    },
-    "geometries": {
+    "geometry": {
       "type": "object",
       "description": "List of available geometries",
       "additionalProperties": {
@@ -45,7 +41,7 @@
         "description": "XYZ-format structure of the molecule"
       }
     },
-    "calculations": {
+    "calculation": {
       "type": "object",
       "description": "Lookup table calculations that have been performed using this molecule. Keys are predefined types of calculations that we will run",
       "additionalItems": {
@@ -71,11 +67,15 @@
           "completed": {
             "type": "boolean",
             "description": "Whether the calculation completed without error"
+          },
+          "added": {
+            "type": "string",
+            "description": "Time at which this calculation was added"
           }
         }
       }
     },
-    "properties": {
+    "property": {
       "type": "object",
       "description": "Derived properties of the molecule. Each property is computed using the data in 'calculations'",
       "additionalItems": {
