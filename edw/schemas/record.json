@@ -67,6 +67,10 @@
           "cjson": {
             "type": "string",
             "description": "Chemical JSON format of the parsed output"
+          },
+          "completed": {
+            "type": "boolean",
+            "description": "Whether the calculation completed without error"
           }
         }
       }
@@ -78,6 +82,11 @@
         "type": "object",
         "description": "Computed properties at different levels of fidelity"
       }
+    },
+    "subset": {
+      "type": "array",
+      "description": "Names of any subsets to which this entry belongs",
+      "items": {"type": "string"}
     }
   },
   "additionalProperties": false,

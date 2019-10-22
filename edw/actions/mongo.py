@@ -86,8 +86,8 @@ def add_molecule(collection: Collection, smiles: str, notes: str = '') -> bool:
 
 def add_calculation(collection: Collection, gridfs: GridFS,
                     inchi_key: str, name: str,
-                    input_file: str,
-                    output_file: str, code: str) -> UpdateResult:
+                    input_file: str, output_file: str,
+                    code: str, completed: bool = True) -> UpdateResult:
     """Append a calculation to a certain record
 
     Does not parse the output record
@@ -112,7 +112,8 @@ def add_calculation(collection: Collection, gridfs: GridFS,
             f'calculations.{name}': {
                 'input_file': infile_id,
                 'output_file': outfile_id,
-                'code': code
+                'code': code,
+                'completed': completed
             }
         }
     }
