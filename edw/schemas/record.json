@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Electrolyte Design Project record",
+  "description": "Holds information about molecules that have been processed through the Electrolyte Design Project pipeline.",
+  "type": "object",
+  "properties": {
+    "inchi_key": {
+      "type": "string",
+      "description": "InChI key of the molecule. Used as database primary key",
+      "pattern": "^[A-Z]{14}-[A-Z]{8}[SN][A-Z]-[A-Z]$"
+    },
+    "identifiers": {
+      "type": "object",
+      "description": "List of other identifiers for the molecule",
+      "properties": {
+        "smiles": {
+          "type": "string",
+          "description": "SMILES string"
+        },
+        "inchi": {
+          "type": "string",
+          "description": "Full InChI string"
+        }
+      },
+     "additionalProperties": {"type": "string"}
+    },
+    "notes": {
+      "type": "string",
+      "description": "Human-added information about the molecule."
+    },
+    "created": {
+      "type": "string",
+      "description": "Datetime this entry was added to the collection"
+    },
+    "updated": {
+      "type": "string",
+      "description": "Datetime this entry was last updated"
+    },
+    "geometries": {
+      "type": "object",
+      "description": "List of available geometries",
+      "additionalProperties": {
+        "type": "string",
+        "description": "XYZ-format structure of the molecule"
+      }
+    },
+    "calculations": {
+      "type": "object",
+      "description": "Lookup table calculations that have been performed using this molecule. Keys are predefined types of calculations that we will run",
+      "additionalItems": {
+        "type": "object",
+        "description": "Description of the inputs, output, and software used to perform each calculation",
+        "properties": {
+          "input_file": {
+            "type": "string",
+            "description": "Input file for the calculation"
+          },
+          "output_file": {
+            "type": "string",
+            "description": "Output log from the calculation"
+          },
+          "code": {
+            "type": "string",
+            "description": "Code used to generate these results"
+          },
+          "cjson": {
+            "type": "string",
+            "description": "Chemical JSON format of the parsed output"
+          }
+        }
+      }
+    },
+    "properties": {
+      "type": "object",
+      "description": "Derived properties of the molecule. Each property is computed using the data in 'calculations'",
+      "additionalItems": {
+        "type": "object",
+        "description": "Computed properties at different levels of fidelity"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": ["inchi_key"]
+}
