@@ -29,6 +29,9 @@ and produces common types as an output.
 The goal is to limit the amount of extra code needed to work with these functions, 
 and to make them compatible with different workflow systems.
 
+There are a specific class of actions that store results into databases.
+These actions might be moved into their own module.
+
 ### Workflows
 
 The "workflow" parts of the library define how to string the actions together using different workflow systems.

@@ -22,7 +22,8 @@
           "description": "Full InChI string"
         }
       },
-     "additionalProperties": {"type": "string"}
+      "additionalProperties": {"type": "string"},
+      "required": ["smiles"]
     },
     "notes": {
       "type": "string",
