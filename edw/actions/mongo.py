@@ -1,7 +1,7 @@
 """Actions related to database storage"""
 
 import sys
-from io import StringIO
+from typing import Any
 from subprocess import Popen
 
 import pymongo
@@ -134,6 +134,25 @@ def add_geometry(collection: Collection, inchi_key: str, name: str, xyz: str):
     update_cmd = {
         "$set": {
             f'geometries.{name}': xyz
+        }
+    }
+    collection.update_one(filter={'inchi_key': inchi_key}, update=update_cmd)
+
+
+def add_property(collection: Collection, inchi_key: str, name: str, level: str, value: Any):
+    """Add a derived property for a molecule
+
+    Args:
+        collection (Collection): Collection in which to store record
+        inchi_key (str): Identifier of the molecule
+        name (str): Name of the property
+        level (str): Name of the fidelity level
+        value: Property value to store
+    """
+
+    update_cmd = {
+        "$set": {
+            f'properties.{name}.{level}': value
         }
     }
     collection.update_one(filter={'inchi_key': inchi_key}, update=update_cmd)

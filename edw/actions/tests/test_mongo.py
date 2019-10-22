@@ -50,3 +50,12 @@ def test_add_calculation(collection, gridfs):
     assert gridfs.get(record['calculations']['test']['input_file']).read().decode() == 'Junk'
     assert gridfs.get(record['calculations']['test']['output_file']).read().decode() == 'More Junk'
 
+
+def test_add_property(collection):
+    inchi_key = mongo.compute_inchi_key('C')
+    mongo.add_molecule(collection, 'C')
+    mongo.add_property(collection, inchi_key, 'u0', 'low', -1)
+    mongo.add_property(collection, inchi_key, 'u0', 'high', -1.1)
+
+    record = collection.find_one({'inchi_key': inchi_key})
+    assert record['properties'] == {'u0': {'low': -1, 'high': -1.1}}
