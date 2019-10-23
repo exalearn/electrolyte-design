@@ -38,10 +38,10 @@ config = Config(
             provider=SlurmProvider(
                 partition='bdwall',
                 launcher=SrunLauncher(),
-                nodes_per_block=1,
+                nodes_per_block=4,
                 init_blocks=1,
                 min_blocks=0,
-                max_blocks=16,
+                max_blocks=1,
                 worker_init='''
 module load gaussian/16-a.03
 export GAUSS_SCRDIR=/scratch
@@ -61,7 +61,7 @@ client = MongoClient(args.mongo_host)
 gridfs = GridFS(client.get_database('jcesr'))
 collection = mongo.initialize_collection(client)
 
-# Get the workload
+# Set up the query
 query = {
     'subset': 'holdout',
     '$or': [{'calculation.oxidized_b3lyp': {'$exists': False}},
@@ -69,10 +69,15 @@ query = {
 }
 projection = ['inchi_key', 'geometry.neutral']
 n_records = collection.count_documents(query)
+print(f'{n_records} records left to process')
+
+# Get the workload
+if args.limit > 0:
+    n_records = min(n_records, args.limit)
+    print(f'Only running {n_records} of them')
 cursor = collection.find(query, projection, limit=args.limit)
 
 if args.dry_run:
-    print(f'Found {n_records} records')
     next_record = cursor.next()
     next_record.pop('_id')
     print(f'First record:\n{next_record}')
