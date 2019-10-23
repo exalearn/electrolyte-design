@@ -21,6 +21,8 @@ arg_parser.add_argument('--dry-run', help='Whether to just get workload',
                         action='store_true', default=False)
 arg_parser.add_argument('--mongo-host', help='Hostname for the MongoDB',
                         default='localhost', type=str)
+arg_parser.add_argument('--limit', help='Maximum number of molecules to run',
+                        default=0, type=int)
 args = arg_parser.parse_args()
 
 # Define how to launch Gaussian
@@ -36,9 +38,10 @@ config = Config(
             provider=SlurmProvider(
                 partition='bdwall',
                 launcher=SrunLauncher(),
-                nodes_per_block=4,
+                nodes_per_block=1,
                 init_blocks=1,
-                max_blocks=1,
+                min_blocks=0,
+                max_blocks=16,
                 worker_init='''
 module load gaussian/16-a.03
 export GAUSS_SCRDIR=/scratch
@@ -47,7 +50,7 @@ export GAUSS_CDEF=0-35
 export GAUSS_MDEF=100GB
 export GAUSS_SDEF=ssh
 export GAUSS_LFLAGS="-vv"''',
-               walltime="1:00:00"
+               walltime="12:00:00"
             )
         )
     ]
@@ -61,12 +64,12 @@ collection = mongo.initialize_collection(client)
 # Get the workload
 query = {
     'subset': 'holdout',
-    'geometry.oxidized': {'$exists': False},
-    'geometry.reduced': {'$exists': False}
+    '$or': [{'calculation.oxidized_b3lyp': {'$exists': False}},
+            {'calculation.reduced_b3lyp': {'$exists': False}}]
 }
 projection = ['inchi_key', 'geometry.neutral']
 n_records = collection.count_documents(query)
-cursor = collection.find(query, projection)
+cursor = collection.find(query, projection, limit=args.limit)
 
 if args.dry_run:
     print(f'Found {n_records} records')
@@ -102,9 +105,13 @@ for record in tqdm(cursor, desc='Submitted', total=n_records):
 
 with open('qm9-charged.jsonld', 'a') as fp:
     for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
-        inchi_key, result = j.result()
+        tag, result = j.result()
+        
+        # Get the inchi key and charge
+        inchi_key, charge = tag
 
         # Store the calculation results
-        mongo.add_calculation(collection, gridfs, inchi_key, 'oxidized_b3lyp',
+        name = 'oxidized_b3lyp' if charge == 1 else 'reduced_b3lyp'
+        mongo.add_calculation(collection, gridfs, inchi_key, name,
                               result['input_file'], result['output_file'], 'Gaussian',
                               result['successful'])
