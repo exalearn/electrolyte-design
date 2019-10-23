@@ -56,8 +56,9 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
     """
 
     with TemporaryDirectory(prefix=tag) as td:
-        input_file = gaussian.make_robust_relaxation_input(structure)
-        result = gaussian.run_gaussian(input_file, 'gaussian', gaussian_cmd, run_dir=td)
+        input_file = gaussian.make_robust_relaxation_input(structure, **kwargs)
+        result = gaussian.run_gaussian(input_file, 'gaussian', gaussian_cmd,
+                                       run_dir=td)
 
         # Read in the output file
         with open(result[1]) as fp:
