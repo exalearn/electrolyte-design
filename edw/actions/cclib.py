@@ -6,6 +6,7 @@ from cclib.io import ccread, CJSONWriter
 from pymatgen.core import Element
 from io import StringIO
 import numpy as np
+import json
 
 
 def get_chemical_json(output_file: str) -> dict:
@@ -13,17 +14,19 @@ def get_chemical_json(output_file: str) -> dict:
 
     Args:
         output_file (str): Content of an output file
+    Returns:
+        (dict) Content of the output file in Chemical JSON format
     """
 
     ccdata = ccread(StringIO(output_file))
-    return CJSONWriter(ccdata).as_dict()
+    return json.loads(CJSONWriter(ccdata).generate_repr())
 
 
 def get_relaxed_structure(output: dict) -> str:
     """Get the relaxed structure in XYZ format
 
     Args:
-        output (dict): CCLib output
+        output (dict): Output for a run in chemical JSON format
     Returns:
         (str) Structure in XYZ format
     """
