@@ -53,7 +53,7 @@ def make_robust_relaxation_input(mol: str, functional: str = 'b3lyp',
 
     # Parse the molecule
     mol_obj = Molecule.from_str(mol, 'xyz')
-    n_electrons = mol_obj.nelectrons
+    n_electrons = mol_obj.nelectrons - charge
     spin_multiplicity = 1 if n_electrons % 2 == 0 else 2
 
     # Make the first step: an SCF calculation
