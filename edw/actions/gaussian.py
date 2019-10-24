@@ -4,7 +4,7 @@ from edw.utils import working_directory
 
 from pymatgen.io.gaussian import GaussianInput, GaussianOutput
 from pymatgen.core import Molecule
-from subprocess import run
+from subprocess import run, CompletedProcess
 from typing import Tuple
 import cclib
 import json
@@ -122,7 +122,8 @@ def make_robust_relaxation_input(mol: str, functional: str = 'b3lyp',
     return input_file
 
 
-def run_gaussian(input_file, job_name, executable, run_dir='.') -> Tuple[int, str, str]:
+def run_gaussian(input_file, job_name, executable, run_dir='.') \
+        -> Tuple[CompletedProcess, str, str]:
     """Perform an Gaussian calculation return the output file
 
     Assumes the calculation is to be started in the current working directory,
@@ -136,7 +137,7 @@ def run_gaussian(input_file, job_name, executable, run_dir='.') -> Tuple[int, st
         executable ([str]): Invocation for Gaussian (e.g., ['mpirun', 'nwchem'])
         run_dir (str): Directory in which to run the job
     Return:
-        - (int): Return code from NWChem
+        - (CompletedProcess): Output information from the subprocess
         - (str): Path to the output file (will be named `{job_name}.out`)
         - (str): Path to the error file (will be named `{job_name}.err`)
     """

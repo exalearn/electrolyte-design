@@ -37,7 +37,7 @@ def smiles_to_conformers(smiles: str, n: int) -> List[str]:
     return [geometry.mol_to_xyz(m) for m in confs]
 
 
-@python_app
+@python_app()
 def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
                    **kwargs) -> dict:
     """Use Gaussian to relax a structure and compute frequencies while at it
@@ -65,7 +65,7 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
             output_file = fp.read()
 
         # Record whether the calculation was successful
-        successful = result[0] == 0
+        successful = result[0].returncode == 0
 
         # Return the raw results
         return {
