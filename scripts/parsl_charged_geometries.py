@@ -30,6 +30,8 @@ gaussian_cmd = ['g16']
 
 # Make a executor
 config = Config(
+    app_cache=False,
+    retries=2,
     executors=[
         HighThroughputExecutor(
             label='bebop_gaussian',
@@ -97,7 +99,6 @@ for app_name in apps.__all__:
         app.executors = worker_execs
         print(f'Assigned app {app_name} to executors: {app.executors}')
 
-
 # Assemble the workflow
 jobs = []
 for record in tqdm(cursor, desc='Submitted', total=n_records):
@@ -108,15 +109,14 @@ for record in tqdm(cursor, desc='Submitted', total=n_records):
         data = apps.match_future_with_inputs((rid, charge), charged_calc)
         jobs.append(data)
 
-with open('qm9-charged.jsonld', 'a') as fp:
-    for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
-        tag, result = j.result()
-        
-        # Get the inchi key and charge
-        inchi_key, charge = tag
+for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
+    tag, result = j.result()
 
-        # Store the calculation results
-        name = 'oxidized_b3lyp' if charge == 1 else 'reduced_b3lyp'
-        mongo.add_calculation(collection, gridfs, inchi_key, name,
-                              result['input_file'], result['output_file'], 'Gaussian',
-                              result['successful'])
+    # Get the inchi key and charge
+    inchi_key, charge = tag
+
+    # Store the calculation results
+    name = 'oxidized_b3lyp' if charge == 1 else 'reduced_b3lyp'
+    mongo.add_calculation(collection, gridfs, inchi_key, name,
+                          result['input_file'], result['output_file'], 'Gaussian',
+                          result['successful'])
