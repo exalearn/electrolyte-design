@@ -19,3 +19,9 @@ def test_methane(tmpdir):
     output = nwchem.parse_output(result[1])
     assert isinstance(output[0], dict)
     assert isinstance(output[1], list)
+
+
+def test_g4mp2_components():
+    methane = mol_to_xyz(smiles_to_conformers('C', 1)[0])
+    for key, kwargs in nwchem.g4mp2_configs.items():
+        nwchem.make_input_file(methane, **kwargs)

@@ -1,18 +1,44 @@
-"""Workflow steps related to NWChem"""
+"""Workflow steps related to NWChem
+
+Our primary use case for NWChem is to perform static calculations,
+such as computing the energy of a molecule or solvation energy.
+"""
 
 from edw.utils import working_directory
-from edw.actions.geometry import mol_to_xyz
 
 from pymatgen.io.nwchem import NwTask, NwInput, NwOutput
 from pymatgen.core import Molecule
-from subprocess import run
+from subprocess import run, CompletedProcess
+from typing import Tuple
 import cclib
 import json
 import os
 
 
-def make_input_file(mol: str, **kwargs):
-    """Make input files for NWChem calculation, currently hard-wired to relaxation
+g4mp2_configs = {
+    'hf_g3lxp': {'theory': 'scf', 'basis_set': 'g3mp2largexp',
+                 'operation': 'energy', 'basis_set_option': 'spherical'},
+    'hf_pvtz': {'theory': 'scf', 'basis_set': 'g4mp2-aug-cc-pvtz',
+                 'operation': 'energy', 'basis_set_option': 'spherical'},
+    'hf_pvqz': {'theory': 'scf', 'basis_set': 'g4mp2-aug-cc-pvqz',
+                 'operation': 'energy', 'basis_set_option': 'spherical'},
+    'mp2_g3lxp': {'theory': 'scf', 'basis_set': 'g3mp2largexp',
+                  'operation': 'energy', 'basis_set_option': 'spherical',
+                  'theory_directives': {'ccsd(t)': '', 'scf': '',
+                                        'freeze': 'atomic'}},
+    'ccsdt_small-basis': {'theory': 'tce', 'basis_set': '6-31G*',
+                          'operation': 'energy',
+                          'theory_directives': {'ccsd(t)': '', 'scf': '',
+                                                'freeze': 'atomic'}}
+}
+"""Configurations used for G4MP2 calculations"""
+
+
+def make_input_file(mol: str, **kwargs) -> str:
+    """Make input files for NWChem calculation
+
+    Tasks are currently hard-wired to only perform a single task,
+    although this is certainly not required for NWCHem
 
     Keyword arguments are passed to the NwChem task creation
 
@@ -34,7 +60,8 @@ def make_input_file(mol: str, **kwargs):
     return str(nw_input)
 
 
-def run_nwchem(input_file, job_name, executable, run_dir='.'):
+def run_nwchem(input_file, job_name, executable, run_dir='.') \
+        -> Tuple[CompletedProcess, str, str]:
     """Perform an NWChem calculation return the output file
 
     Assumes the calculation is to be started in the current working directory,
