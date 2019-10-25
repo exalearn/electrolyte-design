@@ -15,45 +15,93 @@ import json
 import os
 
 
-g4mp2_configs = {
-    'hf_g3lxp': {'theory': 'scf', 'basis_set': 'g3mp2largexp',
-                 'operation': 'energy', 'basis_set_option': 'spherical'},
-    'hf_pvtz': {'theory': 'scf', 'basis_set': 'g4mp2-aug-cc-pvtz',
-                 'operation': 'energy', 'basis_set_option': 'spherical'},
-    'hf_pvqz': {'theory': 'scf', 'basis_set': 'g4mp2-aug-cc-pvqz',
-                 'operation': 'energy', 'basis_set_option': 'spherical'},
-    'mp2_g3lxp': {'theory': 'mp2', 'basis_set': 'g3mp2largexp',
-                  'operation': 'energy', 'basis_set_option': 'spherical',
-                  'theory_directives': {'freeze': 'atomic'}},
-    'ccsdt_small-basis': {'theory': 'ccsd(t)', 'basis_set': '6-31G*',
-                          'operation': 'energy',
-                          'theory_directives': {'freeze': 'atomic'}}
-}
-"""Configurations used for G4MP2 calculations"""
+def generate_g4mp2_configs(charge: int = 0) -> Tuple[dict, dict]:
+    """Generate the input file settings for G4MP2
+
+    Some special settings are needed when running CCSD(T) on non-closed-shell systems.
+
+    Args:
+        charge (int): Charge on the system
+    Returns:
+        - (dict) Dictionary of the task settings for each component
+        - (dict) Dictionary of the input file options for each component
+    """
+    # Default settings
+    task_config = {
+        'hf_g3lxp': {'theory': 'scf', 'basis_set': 'g3mp2largexp',
+                     'operation': 'energy', 'basis_set_option': 'spherical'},
+        'hf_pvtz': {'theory': 'scf', 'basis_set': 'g4mp2-aug-cc-pvtz',
+                     'operation': 'energy', 'basis_set_option': 'spherical'},
+        'hf_pvqz': {'theory': 'scf', 'basis_set': 'g4mp2-aug-cc-pvqz',
+                    'operation': 'energy', 'basis_set_option': 'spherical'},
+        'mp2_g3lxp': {'theory': 'mp2', 'basis_set': 'g3mp2largexp',
+                      'operation': 'energy', 'basis_set_option': 'spherical',
+                      'theory_directives': {'freeze': 'atomic'}},
+        'ccsd(t)_small-basis': {'theory': 'tce', 'basis_set': '6-31G*',
+                                'operation': 'energy',
+                                'theory_directives': {'ccsd(t)': '',
+                                                      'freeze': 'atomic'}}
+    }
+    input_config = dict((k, {}) for k in task_config.keys())
+
+    # For a charge of 0, we need not do anything
+    if charge == 0:
+        return task_config, input_config
+
+    # For non-zero charges, the MP2 and CCSD(T) calculations require changes:
+    #  1. Specify the "doublet" multiplicity for all calculations
+    for value in task_config.values():
+        if value['theory'] == 'scf':
+            td = value.get('theory_directives', {})
+            td['doublet'] = ''
+            value['theory_directives'] = td
+        else:
+            ad = value.get('alternate_directives', {})
+            scf = ad.get('scf', {})
+            scf['doublet'] = ''
+            ad['scf'] = scf
+            value['alternate_directives'] = ad
+
+    # 2. Change storage for 2eorb
+    task_config['ccsd(t)_small-basis']['theory_directives']['2oerb'] = ''
+    task_config['ccsd(t)_small-basis']['theory_directives']['2emet'] = '11'
+
+    # 3. Add more memory for ccsd(t) calculation
+    input_config['ccsd(t)_small-basis'] = {
+        'memory_options': 'memory stack 1200 mb heap 100 mb global 600 mb'
+    }
+
+    return task_config, input_config
 
 
-def make_input_file(mol: str, **kwargs) -> str:
+def make_input_file(mol: str, task_kwargs: dict, input_kwargs: dict = None) -> str:
     """Make input files for NWChem calculation
 
     Tasks are currently hard-wired to only perform a single task,
     although this is certainly not required for NWCHem
 
-    Keyword arguments are passed to the NwChem task creation
+    This class uses Pymatgen's NWChem io module to make input files
 
     Args:
         mol (str): Molecule to be evaluated in XYZ format
+        task_kwargs (dict): Keyword arguments for task creation
+        input_kwargs (dict): Keyword arguments for the input file
     Returns:
         (str): Input file for the NWChem run
     """
+
+    # Get defaults
+    if input_kwargs is None:
+        input_kwargs = {}
 
     # Parse the molecule
     mol_obj = Molecule.from_str(mol, 'xyz')
 
     # Generate the list of tasks
-    task = NwTask.from_molecule(mol_obj, **kwargs)  # Just one for now
+    task = NwTask.from_molecule(mol_obj, **task_kwargs)  # Just one for now
 
     # Make the input file
-    nw_input = NwInput(mol_obj, tasks=[task])
+    nw_input = NwInput(mol_obj, tasks=[task], **input_kwargs)
 
     return str(nw_input)
 

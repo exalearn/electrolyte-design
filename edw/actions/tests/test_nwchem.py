@@ -8,7 +8,7 @@ import os
 def test_methane(tmpdir):
     methane = smiles_to_conformers('C', 1)[0]
     methane = mol_to_xyz(methane)
-    input_file = nwchem.make_input_file(methane, theory='dft')
+    input_file = nwchem.make_input_file(methane, task_kwargs=dict(theory='dft'))
     result = nwchem.run_nwchem(input_file, 'methane', ['mpirun', '-n',
                                                        '1', 'nwchem'],
                                run_dir=tmpdir)
@@ -23,5 +23,9 @@ def test_methane(tmpdir):
 
 def test_g4mp2_components():
     methane = mol_to_xyz(smiles_to_conformers('C', 1)[0])
-    for key, kwargs in nwchem.g4mp2_configs.items():
-        nwchem.make_input_file(methane, **kwargs)
+
+    for charge in [0, 1]:
+        task_configs, input_configs = nwchem.generate_g4mp2_configs(charge)
+        for run_name in task_configs.keys():
+            nwchem.make_input_file(methane, task_configs[run_name],
+                                   input_configs[run_name])
