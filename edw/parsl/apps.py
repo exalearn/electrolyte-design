@@ -6,7 +6,7 @@ from edw.actions import geometry, nwchem, cclib, gaussian
 from concurrent.futures import as_completed
 from typing import List, Tuple, Any
 
-__all__ = ['relax_nwchem', 'relax_gaussian', 'relax_conformers',
+__all__ = ['run_nwchem', 'relax_gaussian', 'relax_conformers',
            'smiles_to_conformers', 'collect_conformers', 'match_future_with_inputs']
 
 
@@ -76,25 +76,39 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
 
 
 @python_app
-def relax_nwchem(tag: str, structure: str, nwchem_cmd: List[str]) -> str:
-    """Relax a structure with NWChem and return the output structure
+def run_nwchem(tag: str, structure: str, nwchem_cmd: List[str],
+               **kwargs) -> dict:
+    """Perform an NWChem calculation
+
+    Writes the input file
 
     Args:
         tag (str): Name of the calculation
         structure (str): Structure in XYZ format
         nwchem_cmd ([str]): Command to issue NWChem
+    Keyword arguments are passed to :meth:`edw.actions.nwchem.make_input_file`
     Returns:
-        (str) Relaxed molecule in XYZ format
+        (dict) Data from relaxation calculation including
+            'input_file': Input file for the calculation
+            'output_file': Complete output file for the calculation
+            'successful': Whether the process completed successfully
     """
 
     with TemporaryDirectory(prefix=tag) as td:
-        input_file = nwchem.make_input_file(structure, theory='dft')
+        input_file = nwchem.make_input_file(structure, **kwargs)
         result = nwchem.run_nwchem(input_file, 'nw', nwchem_cmd, run_dir=td)
 
-        # Parse the output
-        cclib_out, pmg_out = nwchem.parse_output(result[1])
-        strc = cclib.get_relaxed_structure(cclib_out)
-        return strc
+        # Was the run successful
+        successful = result[0].returncode == 0
+
+        # Read the output file
+        with open(result[1]) as fp:
+            output_file = fp.read()
+        return {
+            'input_file': input_file,
+            'output_file': output_file,
+            'successful': successful
+        }
 
 
 @python_app(executors=['local_threads'])
@@ -112,7 +126,7 @@ def relax_conformers(confs, nwchem_cmd):
     jobs = []
     for i, conf in enumerate(confs):
         tag = f'c{i}'
-        jobs.append(relax_nwchem(tag, conf, nwchem_cmd))
+        jobs.append(run_nwchem(tag, conf, nwchem_cmd))
 
     return jobs
 
