@@ -22,14 +22,12 @@ g4mp2_configs = {
                  'operation': 'energy', 'basis_set_option': 'spherical'},
     'hf_pvqz': {'theory': 'scf', 'basis_set': 'g4mp2-aug-cc-pvqz',
                  'operation': 'energy', 'basis_set_option': 'spherical'},
-    'mp2_g3lxp': {'theory': 'scf', 'basis_set': 'g3mp2largexp',
+    'mp2_g3lxp': {'theory': 'mp2', 'basis_set': 'g3mp2largexp',
                   'operation': 'energy', 'basis_set_option': 'spherical',
-                  'theory_directives': {'ccsd(t)': '', 'scf': '',
-                                        'freeze': 'atomic'}},
-    'ccsdt_small-basis': {'theory': 'tce', 'basis_set': '6-31G*',
+                  'theory_directives': {'freeze': 'atomic'}},
+    'ccsdt_small-basis': {'theory': 'ccsd(t)', 'basis_set': '6-31G*',
                           'operation': 'energy',
-                          'theory_directives': {'ccsd(t)': '', 'scf': '',
-                                                'freeze': 'atomic'}}
+                          'theory_directives': {'freeze': 'atomic'}}
 }
 """Configurations used for G4MP2 calculations"""
 
