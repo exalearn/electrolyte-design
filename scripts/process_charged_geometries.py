@@ -48,6 +48,15 @@ for record in tqdm(cursor, total=n_records):
             failures[tag] = 'Output failed to parse. Failure'
             continue
 
+        # Get the geometry
+        neutral_geom = record['geometry']['neutral']
+        relaxed_geom = cclib.get_relaxed_structure(cjson)
+        mongo.add_geometry(collection, inchi_key, state, relaxed_geom)
+        if isclose(pybel.get_rmsd(neutral_geom, relaxed_geom), 0):
+            failures[tag] = 'Geometry did not change'
+            continue
+
+
         # Check whether it converged
         if not cjson['optimization']['done']:
             failures[tag] = 'Optimization is incomplete'
@@ -60,13 +69,6 @@ for record in tqdm(cursor, total=n_records):
             failures[tag] = f'Negative frequencies. Minimum: {np.min(freqs)}'
             continue
 
-        # Get the geometry
-        neutral_geom = record['geometry']['neutral']
-        relaxed_geom = cclib.get_relaxed_structure(cjson)
-        if isclose(pybel.get_rmsd(neutral_geom, relaxed_geom), 0):
-            failures[tag] = 'Geometry did not change'
-            continue
-        mongo.add_geometry(collection, inchi_key, state, relaxed_geom)
 
 print(f'{len(failures)} failures detected')
 
@@ -89,10 +91,10 @@ config = Config(
             provider=SlurmProvider(
                 partition='bdwall',
                 launcher=SrunLauncher(),
-                nodes_per_block=4,
-                init_blocks=1,
+                nodes_per_block=1,
+                init_blocks=0,
                 min_blocks=0,
-                max_blocks=1,
+                max_blocks=8,
                 worker_init='''
 module load gaussian/16-a.03
 export GAUSS_SCRDIR=/scratch
@@ -123,7 +125,7 @@ for app_name in apps.__all__:
 
 # Assemble the workflow
 jobs = []
-for failure in tqdm(failures, desc='Submitted', total=n_records):
+for failure in tqdm(failures, desc='Submitted'):
     # Get the associated record
     inchi_key, state = failure.split(":")
     record = collection.find_one({'inchi_key': inchi_key})
@@ -137,7 +139,7 @@ for failure in tqdm(failures, desc='Submitted', total=n_records):
         raise ValueError('State not recognized')
 
     # Submit a calculation
-    charged_calc = apps.relax_gaussian(inchi_key, record['geometry']['neutral'],
+    charged_calc = apps.relax_gaussian(inchi_key, record['geometry'][state],
                                        gaussian_cmd, charge=charge, functional='B3LYP')
     data = apps.match_future_with_inputs((inchi_key, charge), charged_calc)
     jobs.append(data)
