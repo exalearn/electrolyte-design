@@ -49,26 +49,35 @@ def generate_g4mp2_configs(charge: int = 0) -> Tuple[dict, dict]:
         return task_config, input_config
 
     # For non-zero charges, the MP2 and CCSD(T) calculations require changes:
+    #  0. Specify the charge in the last description
+    for value in task_config.values():
+        value['charge'] = 1
+
     #  1. Specify the "doublet" multiplicity for all calculations
     for value in task_config.values():
         if value['theory'] == 'scf':
+            # The setting is a "theory directive" when using SCF
             td = value.get('theory_directives', {})
             td['doublet'] = ''
             value['theory_directives'] = td
         else:
+            # The setting is an "alternative directive" when not
             ad = value.get('alternate_directives', {})
             scf = ad.get('scf', {})
             scf['doublet'] = ''
+            if value['theory'].startswith('mp2'):
+                # Only needed for MP2. We use the TCE version of MP2 for CCSD(T)
+                scf['uhf'] = ''
             ad['scf'] = scf
             value['alternate_directives'] = ad
 
     # 2. Change storage for 2eorb
-    task_config['ccsd(t)_small-basis']['theory_directives']['2oerb'] = ''
+    task_config['ccsd(t)_small-basis']['theory_directives']['2eorb'] = ''
     task_config['ccsd(t)_small-basis']['theory_directives']['2emet'] = '11'
 
     # 3. Add more memory for ccsd(t) calculation
     input_config['ccsd(t)_small-basis'] = {
-        'memory_options': 'memory stack 1200 mb heap 100 mb global 600 mb'
+        'memory_options': 'stack 1200 mb heap 100 mb global 600 mb'
     }
 
     return task_config, input_config
