@@ -76,17 +76,15 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
 
 
 @python_app
-def run_nwchem(tag: str, structure: str, nwchem_cmd: List[str],
-               **kwargs) -> dict:
+def run_nwchem(tag: str, input_file: str, nwchem_cmd: List[str]) -> dict:
     """Perform an NWChem calculation
 
     Writes the input file
 
     Args:
         tag (str): Name of the calculation
-        structure (str): Structure in XYZ format
+        input_file (str): Input file to run
         nwchem_cmd ([str]): Command to issue NWChem
-    Keyword arguments are passed to :meth:`edw.actions.nwchem.make_input_file`
     Returns:
         (dict) Data from relaxation calculation including
             'input_file': Input file for the calculation
@@ -95,7 +93,6 @@ def run_nwchem(tag: str, structure: str, nwchem_cmd: List[str],
     """
 
     with TemporaryDirectory(prefix=tag) as td:
-        input_file = nwchem.make_input_file(structure, **kwargs)
         result = nwchem.run_nwchem(input_file, 'nw', nwchem_cmd, run_dir=td)
 
         # Was the run successful
