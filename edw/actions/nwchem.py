@@ -15,13 +15,16 @@ import json
 import os
 
 
-def generate_g4mp2_configs(charge: int = 0) -> Tuple[dict, dict]:
+def generate_g4mp2_configs(charge: int = 0, memory_size='400 mb') -> Tuple[dict, dict]:
     """Generate the input file settings for G4MP2
 
     Some special settings are needed when running CCSD(T) on non-closed-shell systems.
 
     Args:
         charge (int): Charge on the system
+        memory_size (str): Amount of memory (see
+            `NWChem docs <http://www.nwchem-sw.org/index.php/Release65:Top-level#MEMORY>`_
+            for details.
     Returns:
         - (dict) Dictionary of the task settings for each component
         - (dict) Dictionary of the input file options for each component
@@ -42,7 +45,9 @@ def generate_g4mp2_configs(charge: int = 0) -> Tuple[dict, dict]:
                                 'theory_directives': {'ccsd(t)': '',
                                                       'freeze': 'atomic'}}
     }
-    input_config = dict((k, {}) for k in task_config.keys())
+    input_config = dict((k, {
+        'memory_options': f'total {memory_size}'
+    }) for k in task_config.keys())
 
     # For a charge of 0, we need not do anything
     if charge == 0:
@@ -74,11 +79,6 @@ def generate_g4mp2_configs(charge: int = 0) -> Tuple[dict, dict]:
     # 2. Change storage for 2eorb
     task_config['ccsd(t)_small-basis']['theory_directives']['2eorb'] = ''
     task_config['ccsd(t)_small-basis']['theory_directives']['2emet'] = '11'
-
-    # 3. Add more memory for ccsd(t) calculation
-    input_config['ccsd(t)_small-basis'] = {
-        'memory_options': 'stack 1200 mb heap 100 mb global 600 mb'
-    }
 
     return task_config, input_config
 
