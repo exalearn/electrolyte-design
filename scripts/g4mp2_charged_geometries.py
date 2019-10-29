@@ -29,8 +29,21 @@ arg_parser.add_argument('--jobs')
 args = arg_parser.parse_args()
 
 # Define how to launch NWChem
-nwchem_cmd = ['aprun', '-n', f'{args.nodes_per_job}',
+ranks_per_node = 16
+threads_per_rank = 4
+threads_per_core = 1
+nwchem_cmd = ['aprun', '-n', f'{args.nodes_per_job * ranks_per_node}',
+              '-N', f'{ranks_per_node}',
+              '-d', f'{threads_per_rank}',
+              '-j', '1',
+              '-cc', 'depth',
+              '--env', f'OMP_NUM_THREADS={threads_per_rank}',
+              '--env', f'MKL_NUM_THREADS={threads_per_rank}',
+              '-j', f'{threads_per_core}'
               '/soft/applications/nwchem/6.8/bin/nwchem']
+
+# Determine the number of workers per executor
+max_workers = args.request_size / args.nodes_per_job
 
 # Make a executor
 config = Config(
@@ -38,12 +51,12 @@ config = Config(
         HighThroughputExecutor(
             label='theta_aprun',
             address=address_by_hostname(),
-            max_workers=1,
+            max_workers=max_workers,
             provider=CobaltProvider(
-                queue='debug-cache-quad',
+                queue='default',
                 launcher=SimpleLauncher(),
-                nodes_per_block=8,
-                init_blocks=1,
+                nodes_per_block=128,
+                init_blocks=0,
                 min_blocks=0,
                 max_blocks=1,
                 worker_init='''
@@ -57,7 +70,7 @@ export MPICH_GNI_MBOX_PLACEMENT=nic
 export MPICH_GNI_LMT_PATH=disabled
 export COMEX_MAX_NB_OUTSTANDING=6
 export LD_LIBRARY_PATH=/soft/compilers/intel/19.0.3.199/compilers_and_libraries_2019.3.199/linux/mkl/lib/intel64:$LD_LIBRARY_PATH''',
-               walltime="1:00:00"
+                walltime="0:30:00"
             )
         )
     ]
