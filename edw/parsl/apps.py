@@ -1,5 +1,6 @@
 """Workflow steps expressed as Parsl applications"""
 
+import os
 from parsl import python_app
 from tempfile import TemporaryDirectory
 from edw.actions import geometry, nwchem, cclib, gaussian
@@ -82,7 +83,7 @@ def run_nwchem(tag: str, input_file: str, nwchem_cmd: List[str]) -> dict:
     Writes the input file
 
     Args:
-        tag (str): Name of the calculation
+        tag (str): Name of the calculation, should be unique
         input_file (str): Input file to run
         nwchem_cmd ([str]): Command to issue NWChem
     Returns:
@@ -92,20 +93,24 @@ def run_nwchem(tag: str, input_file: str, nwchem_cmd: List[str]) -> dict:
             'successful': Whether the process completed successfully
     """
 
-    with TemporaryDirectory(prefix=tag) as td:
-        result = nwchem.run_nwchem(input_file, 'nw', nwchem_cmd, run_dir=td)
+    # Create a run directory for this calculation
+    run_dir = os.path.join('edw-run', 'nwchem', tag)
+    os.makedirs(run_dir, exist_ok=True)
 
-        # Was the run successful
-        successful = result[0].returncode == 0
+    # Invoke NWChem
+    result = nwchem.run_nwchem(input_file, 'nw', nwchem_cmd, run_dir=run_dir)
 
-        # Read the output file
-        with open(result[1]) as fp:
-            output_file = fp.read()
-        return {
-            'input_file': input_file,
-            'output_file': output_file,
-            'successful': successful
-        }
+    # Was the run successful
+    successful = result[0].returncode == 0
+
+    # Read the output file
+    with open(result[1]) as fp:
+        output_file = fp.read()
+    return {
+        'input_file': input_file,
+        'output_file': output_file,
+        'successful': successful
+    }
 
 
 @python_app(executors=['local_threads'])

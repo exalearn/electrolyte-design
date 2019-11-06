@@ -35,15 +35,15 @@ threads_per_core = 1
 nwchem_cmd = ['aprun', '-n', f'{args.nodes_per_job * ranks_per_node}',
               '-N', f'{ranks_per_node}',
               '-d', f'{threads_per_rank}',
-              '-j', '1',
               '-cc', 'depth',
               '--env', f'OMP_NUM_THREADS={threads_per_rank}',
               '--env', f'MKL_NUM_THREADS={threads_per_rank}',
-              '-j', f'{threads_per_core}'
+              '-j', f'{threads_per_core}',
               '/soft/applications/nwchem/6.8/bin/nwchem']
+print('NWChem command: ', ' '.join(nwchem_cmd))
 
 # Determine the number of workers per executor
-max_workers = args.request_size / args.nodes_per_job
+max_workers = args.request_size // args.nodes_per_job
 
 # Make a executor
 config = Config(
@@ -53,13 +53,17 @@ config = Config(
             address=address_by_hostname(),
             max_workers=max_workers,
             provider=CobaltProvider(
-                queue='default',
+                queue='debug-cache-quad',
                 launcher=SimpleLauncher(),
-                nodes_per_block=128,
+                nodes_per_block=8,
                 init_blocks=0,
                 min_blocks=0,
                 max_blocks=1,
+                account='CSC249ADCD08',
+                cmd_timeout=60,
                 worker_init='''
+export PATH="/home/lward/miniconda3/bin:$PATH"
+source activate edw
 module load atp
 export MPICH_GNI_MAX_EAGER_MSG_SIZE=16384
 export MPICH_GNI_MAX_VSHORT_MSG_SIZE=10000
@@ -70,7 +74,7 @@ export MPICH_GNI_MBOX_PLACEMENT=nic
 export MPICH_GNI_LMT_PATH=disabled
 export COMEX_MAX_NB_OUTSTANDING=6
 export LD_LIBRARY_PATH=/soft/compilers/intel/19.0.3.199/compilers_and_libraries_2019.3.199/linux/mkl/lib/intel64:$LD_LIBRARY_PATH''',
-                walltime="0:30:00"
+                walltime="1:00:00"
             )
         )
     ]
@@ -89,6 +93,9 @@ query = {
 projection = ['inchi_key', 'geometry.oxidized', 'geometry.reduced']
 n_records = collection.count_documents(query)
 cursor = collection.find(query, projection, limit=args.limit)
+if args.limit > 0:
+    n_records = min(n_records, args.limit)
+    print(f'Only running {n_records} of them')
 
 if args.dry_run:
     print(f'Found {n_records} records')
@@ -127,10 +134,11 @@ for record in tqdm(cursor, desc='Submitted', total=n_records):
 
         # Submit the NWCHem jobs
         for level in task_cfgs:
+            calculation_name = f'{rid}-{name}-{level}'
             task_cfg = task_cfgs[level]
             input_cfg = input_cfgs[level]
             input_file = nwchem.make_input_file(xyz, task_cfg, input_cfg)
-            calc = apps.run_nwchem(str(rid), xyz, nwchem_cmd=nwchem_cmd)
+            calc = apps.run_nwchem(calculation_name, input_file, nwchem_cmd=nwchem_cmd)
             data = apps.match_future_with_inputs((rid, level, charge), calc)
             jobs.append(data)
 
