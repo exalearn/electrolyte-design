@@ -40,10 +40,10 @@ config = Config(
             provider=SlurmProvider(
                 partition='bdwall',
                 launcher=SrunLauncher(),
-                nodes_per_block=4,
-                init_blocks=1,
+                nodes_per_block=1,
+                init_blocks=0,
                 min_blocks=0,
-                max_blocks=1,
+                max_blocks=10,
                 worker_init='''
 module load gaussian/16-a.03
 export GAUSS_SCRDIR=/scratch

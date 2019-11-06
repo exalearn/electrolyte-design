@@ -1,3 +1,5 @@
+"""Makes sure geometries converged correctly.
+If not, resubmits the optimization"""
 from parsl.executors import ThreadPoolExecutor, HighThroughputExecutor
 from parsl.providers import SlurmProvider
 from parsl.launchers import SrunLauncher
@@ -12,6 +14,7 @@ from math import isclose
 from tqdm import tqdm
 import numpy as np
 import parsl
+import json
 
 # Connect to Mongo and GridFS
 client = MongoClient('localhost')
@@ -75,6 +78,10 @@ print(f'{len(failures)} failures detected')
 # Resubmit the failures
 if len(failures) == 0:
     exit()
+
+# Write the failures to disk
+with open('failures.json', 'w') as fp:
+    json.dump(failures, fp, indent=2)
 
 # Define how to launch Gaussian
 gaussian_cmd = ['g16']
