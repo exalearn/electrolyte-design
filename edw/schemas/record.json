@@ -60,13 +60,13 @@
             "type": "string",
             "description": "Code used to generate these results"
           },
-          "cjson": {
-            "type": "string",
-            "description": "Chemical JSON format of the parsed output"
-          },
           "completed": {
             "type": "boolean",
-            "description": "Whether the calculation completed without error"
+            "description": "Whether the calculation exited with a non-error status, though it still may need to be resubmitted (e.g., if the geometric relaxation run out of steps)."
+          },
+          "validated": {
+            "type": "boolean",
+            "description": "If the calculation has been validated and no further re-runs are needed"
           },
           "added": {
             "type": "string",
