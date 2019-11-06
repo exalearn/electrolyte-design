@@ -1,11 +1,14 @@
-"""Workflow steps related to Gaussian"""
+"""Workflow actions related to Gaussian
+
+At present, we use Gaussian to generate relaxed geometries
+"""
 
 from edw.utils import working_directory
 
 from pymatgen.io.gaussian import GaussianInput, GaussianOutput
 from pymatgen.core import Molecule
 from subprocess import run, CompletedProcess
-from typing import Tuple
+from typing import Tuple, Optional
 import cclib
 import json
 import os
@@ -69,6 +72,7 @@ def make_robust_relaxation_input(mol: str, functional: str = 'b3lyp',
 
     # Make the second step (frequency calculation)
     #  The geometry gets read from the checkpoint
+    # TODO: Do the frequency at a lower bais set
     next_step = GaussianInput(None, functional=functional, basis_set=basis_set,
                               spin_multiplicity=spin_multiplicity, charge=charge,
                               route_parameters={'freq': None,
@@ -155,7 +159,8 @@ def run_gaussian(input_file, job_name, executable, run_dir='.') \
             result = run(executable, stdin=fi, stdout=fp, stderr=fe)
 
         # Return output
-        return result, os.path.join(run_dir, output_file), os.path.join(run_dir, error_file)
+        return result, os.path.join(run_dir, output_file),\
+               os.path.join(run_dir, error_file)
 
 
 def parse_output(output_file):
@@ -179,3 +184,40 @@ def parse_output(output_file):
     # Parse the error information with
     output = GaussianOutput(output_file)
     return cclib_out, output.errors
+
+
+def validate_relaxation(output_file: str) -> Tuple[bool, Optional[str]]:
+    """Determine whether a relaxation has completed successfully and,
+    if not, create a revised input file.
+
+    Args:
+        output_file (str): Output file from the Gaussian relaxation
+    Returns:
+        - (bool) Whether the calculation completed successfully
+        - (str): Relaxed geometry, if able to be parsed
+    """
+
+    # TODO (wardlt): This could be more general than just Gaussian, but
+    #  we only use Gaussian for relaxation at the moment
+
+    # Attempt to parse the output file, resubmit the same input file
+    try:
+        cjson = cclib.get_chemical_json(output_file)
+    except BaseException:
+        return False, None
+
+    # Get the JSON file
+    relaxed_geom = cclib.get_relaxed_structure(cjson)
+
+    # Check whether it converged
+    if not cjson['optimization']['done']:
+        return False, relaxed_geom
+
+    # Check whether the frequencies are all positive
+    freqs = cjson['vibrations']['frequencies']
+    positive_freqs = all(map(lambda x: x > 0, freqs))
+    if not positive_freqs:
+        return False, relaxed_geom
+
+    # All tests passed!
+    return True, relaxed_geom
