@@ -1,6 +1,7 @@
 """Workflow steps expressed as Parsl applications"""
 
 import os
+import logging
 from gridfs import GridFS
 from parsl import python_app
 from parsl.dataflow.futures import AppFuture
@@ -10,6 +11,8 @@ from typing import List, Tuple, Any, Optional, Dict
 
 __all__ = ['run_nwchem', 'run_gaussian', 'smiles_to_conformers',
            'match_future_with_inputs', 'store_and_validate_relaxation']
+
+logger = logging.getLogger(__name__)
 
 
 @python_app(executors=['local_threads'])
@@ -22,6 +25,7 @@ def match_future_with_inputs(inputs: Any, future) -> Tuple[Any, Any]:
     Returns:
         inputs, result
     """
+    logger.info('Running match_future_with_inpus')
     return inputs, future
 
 
@@ -140,6 +144,7 @@ def store_and_validate_relaxation(inchi_key: str,
         - ((Any)) New positional arguments to pass to pass to relaxation script
         - (dict): New keyword arguments to pass to relaxation script
     """
+    logger.info(f'Storing results for {calc_name} calculation on {inchi_key}')
 
     # Store the calculation data in MongoDB
     mongo.add_calculation(collection, gridfs,
@@ -163,8 +168,11 @@ def store_and_validate_relaxation(inchi_key: str,
 
     # If converged, store the result. We're done!
     if converged:
+        logger.info(f'{calc_name} on {inchi_key} is converged. Storing geometry '
+                    f'as {geom_name}')
         mongo.add_geometry(collection, inchi_key, geom_name, new_structure)
         return None
     else:
         # Use the new geometry as input to the function
+        logger.info(f'{calc_name} on {inchi_key} did not converge')
         return (new_structure,), {}

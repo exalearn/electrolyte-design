@@ -9,7 +9,10 @@ from edw.parsl import apps
 from pymongo.collection import Collection
 from gridfs import GridFS
 from functools import partial
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 @python_app(executors=['local_threads'])
@@ -27,6 +30,7 @@ def submit_or_none(new_inputs: Optional[Tuple[Tuple[Any], Dict[str, Any]]],
         (AppFuture) Future for the simulation function
     """
     if new_inputs is not None:
+        logger.info(f'Resubmitting {simulate_func.__name__}')
         args, kwargs = new_inputs
         return simulate_func(*args, **kwargs)
     else:
