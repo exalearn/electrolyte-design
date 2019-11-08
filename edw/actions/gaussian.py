@@ -9,6 +9,7 @@ from pymatgen.io.gaussian import GaussianInput, GaussianOutput
 from pymatgen.core import Molecule
 from subprocess import run, CompletedProcess
 from typing import Tuple, Optional
+from edw.actions import cclib as cclib_wrapper
 import cclib
 import json
 import os
@@ -202,12 +203,12 @@ def validate_relaxation(output_file: str) -> Tuple[bool, Optional[str]]:
 
     # Attempt to parse the output file, resubmit the same input file
     try:
-        cjson = cclib.get_chemical_json(output_file)
+        cjson = cclib_wrapper.get_chemical_json(output_file)
     except BaseException:
         return False, None
 
     # Get the JSON file
-    relaxed_geom = cclib.get_relaxed_structure(cjson)
+    relaxed_geom = cclib_wrapper.get_relaxed_structure(cjson)
 
     # Check whether it converged
     if not cjson['optimization']['done']:

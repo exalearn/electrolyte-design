@@ -1,14 +1,15 @@
 """Workflow steps expressed as Parsl applications"""
 
 import os
+from gridfs import GridFS
 from parsl import python_app
-from tempfile import TemporaryDirectory
-from edw.actions import geometry, nwchem, cclib, gaussian
-from concurrent.futures import as_completed
-from typing import List, Tuple, Any
+from parsl.dataflow.futures import AppFuture
+from pymongo.collection import Collection
+from edw.actions import geometry, nwchem, gaussian, mongo
+from typing import List, Tuple, Any, Optional, Dict
 
-__all__ = ['run_nwchem', 'relax_gaussian', 'relax_conformers',
-           'smiles_to_conformers', 'collect_conformers', 'match_future_with_inputs']
+__all__ = ['run_nwchem', 'run_gaussian', 'smiles_to_conformers',
+           'match_future_with_inputs', 'store_and_validate_relaxation']
 
 
 @python_app(executors=['local_threads'])
@@ -39,14 +40,13 @@ def smiles_to_conformers(smiles: str, n: int) -> List[str]:
 
 
 @python_app()
-def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
-                   **kwargs) -> dict:
-    """Use Gaussian to relax a structure and compute frequencies while at it
+def run_gaussian(gaussian_cmd: List[str], input_file: str,  run_dir: str) -> dict:
+    """Run Gaussian
 
     Args:
-        tag (str): Name of the calculation
-        structure (str): Structure in XYZ format
-        gaussian_cmd ([str]): Command to start Gaussian
+        gaussian_cmd ([str]): Command used to invoke Gaussian
+        input_file (str): Structure in XYZ format
+        run_dir (str): Directory in which to run calculation
     Keyword Args:
         Passed to Gaussian input file creation
     Returns:
@@ -56,24 +56,26 @@ def relax_gaussian(tag: str, structure: str, gaussian_cmd: List[str],
             'successful': Whether the process completed successfully
     """
 
-    with TemporaryDirectory(prefix=tag) as td:
-        input_file = gaussian.make_robust_relaxation_input(structure, **kwargs)
-        result = gaussian.run_gaussian(input_file, 'gaussian', gaussian_cmd,
-                                       run_dir=td)
+    # TODO (wardlt): Consider making this a Parsl Bash app
 
-        # Read in the output file
-        with open(result[1]) as fp:
-            output_file = fp.read()
+    # Run Gaussian
+    #  TODO (wardlt): Can I replace this function with the QCArchive?
+    result = gaussian.run_gaussian(input_file, 'gaussian', gaussian_cmd,
+                                   run_dir=run_dir)
 
-        # Record whether the calculation was successful
-        successful = result[0].returncode == 0
+    # Read in the output file
+    with open(result[1]) as fp:
+        output_file = fp.read()
 
-        # Return the raw results
-        return {
-            'input_file': input_file,
-            'output_file': output_file,
-            'successful': successful
-        }
+    # Record whether the calculation was successful
+    successful = result[0].returncode == 0
+
+    # Return the raw results
+    return {
+        'input_file': input_file,
+        'output_file': output_file,
+        'successful': successful
+    }
 
 
 @python_app
@@ -114,33 +116,55 @@ def run_nwchem(tag: str, input_file: str, nwchem_cmd: List[str]) -> dict:
 
 
 @python_app(executors=['local_threads'])
-def relax_conformers(confs, nwchem_cmd):
-    """Submit tasks to relax each conformer for a molecule
+def store_and_validate_relaxation(inchi_key: str,
+                                  calc_name: str,
+                                  geom_name: str,
+                                  relax_result: dict,
+                                  collection: Collection,
+                                  gridfs: GridFS) \
+        -> Optional[Optional[Tuple[Any], Dict[str, Any]]]:
+    """Process the outputs from a Gaussian relaxation:
+
+    1. Check whether te calculation converged
+    2. If so, store the result in MongoDB
+    3. If not, make a new set of relaxation arguments
 
     Args:
-        input_tuple ((str, [str])): Molecule smiles string and conformers in MOL format
-        nwchem_cmd ([str]): Command used to launch NWChem
+        inchi_key (str): InChI key of molecule in question
+        calc_name (str): Name to store calculation in the database
+        geom_name (str): Name to store the geometry as
+        relax_result (dict): Output of a Gaussian calculation
+        collection (Collection): Connection to the MongoDB collection
+        gridfs (GridFS): Connection the MongoDB GridFS store
     Returns:
-        ([AppFuture]): List of app futures
+        - ((Any)) New positional arguments to pass to pass to relaxation script
+        - (dict): New keyword arguments to pass to relaxation script
     """
 
-    # Submit new jobs
-    jobs = []
-    for i, conf in enumerate(confs):
-        tag = f'c{i}'
-        jobs.append(run_nwchem(tag, conf, nwchem_cmd))
+    # Store the calculation data in MongoDB
+    mongo.add_calculation(collection, gridfs,
+                          inchi_key, calc_name,
+                          relax_result['input_file'],
+                          relax_result['output_file'],
+                          'gaussian')
 
-    return jobs
+    # Retrieve the output file
+    output_file = relax_result['output_file']
 
+    # Check if the relaxation completed successfully
+    converged, new_structure = gaussian.validate_relaxation(output_file)
 
-@python_app(executors=['local_threads'])
-def collect_conformers(inchi_key, conf_jobs) -> Tuple[str, List[str]]:
-    """Collect the conformers for a certain calculation
+    # Store whether the calculation converged
+    collection.update_one({'inchi_key': inchi_key},
+                          {'$set':
+                              {f'calculation.{calc_name}': {
+                                  'validated': converged
+                              }}})
 
-    Args:
-        inchi_key (str): InChI key for a molecule
-        conf_jobs (AppFuture): Futures for the jobs running
-    """
-
-    relaxed_confs = [s.result() for s in as_completed(conf_jobs)]
-    return inchi_key, relaxed_confs
+    # If converged, store the result. We're done!
+    if converged:
+        mongo.add_geometry(collection, inchi_key, geom_name, new_structure)
+        return None
+    else:
+        # Use the new geometry as input to the function
+        return (new_structure,), {}
