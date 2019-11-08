@@ -122,7 +122,7 @@ def store_and_validate_relaxation(inchi_key: str,
                                   relax_result: dict,
                                   collection: Collection,
                                   gridfs: GridFS) \
-        -> Optional[Optional[Tuple[Any], Dict[str, Any]]]:
+        -> Optional[Tuple[Tuple[Any], Dict[str, Any]]]:
     """Process the outputs from a Gaussian relaxation:
 
     1. Check whether te calculation converged

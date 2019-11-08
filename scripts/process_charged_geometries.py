@@ -98,6 +98,8 @@ for record in tqdm(cursor, total=n_records):
 
         # Check if the relaxation completed successfully
         converged, new_structure = gaussian.validate_relaxation(output_file)
+        if new_structure is None:
+            raise ValueError()
 
         # If converged, store the result. We're done!
         if converged:
