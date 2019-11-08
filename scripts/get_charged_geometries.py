@@ -11,6 +11,7 @@ from parsl.providers import SlurmProvider
 from parsl.launchers import SrunLauncher
 from parsl.addresses import address_by_hostname
 from parsl.config import Config
+from logging.handlers import RotatingFileHandler
 from concurrent.futures import as_completed
 from pymongo import MongoClient
 from edw.actions import mongo
@@ -18,8 +19,20 @@ from edw.parsl import apps, chains
 from gridfs import GridFS
 from tqdm import tqdm
 import argparse
+import logging
 import parsl
+import os
 
+# Setup the logging
+os.makedirs('logs', exist_ok=True)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO,
+                    handlers=RotatingFileHandler(
+                        filename=os.path.join('logs', 'get_charged_geometries.log'),
+                        maxBytes=1024 * 1024 * 16,
+                        backupCount=4
+                    ))
+logger = logging.getLogger(__name__)
 
 # Parse user arguments
 arg_parser = argparse.ArgumentParser()
@@ -125,6 +138,7 @@ counter = tqdm(total=len(jobs), desc='Completed')
 while len(jobs) > 0:
     # Wait for a task to complete
     job = next(as_completed(jobs))
+    logger.info(f'Task {job.tid} completed')
 
     # Remove job from the current queue
     jobs.remove(job)
@@ -135,6 +149,7 @@ while len(jobs) > 0:
     # If it is None, the job is complete. Otherwise, add the current result
     #  back into the pool of "yet to be completed Parsl jobs"
     if result is not None:
-        jobs.append(job)  # We are not done yet
+        logger.info(f'Task {job.tid} created a new task {result.tid}')
+        jobs.append(result)  # We are not done yet
     else:
         counter.update()  # Increments the status bar
