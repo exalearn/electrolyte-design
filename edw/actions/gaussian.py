@@ -211,7 +211,7 @@ def validate_relaxation(output_file: str) -> Tuple[bool, Optional[str]]:
     relaxed_geom = cclib_wrapper.get_relaxed_structure(cjson)
 
     # Check whether it converged
-    if not cjson['optimization']['done']:
+    if not cjson['optimization'].get('done', False):
         return False, relaxed_geom
 
     # Check whether the frequencies are all positive
