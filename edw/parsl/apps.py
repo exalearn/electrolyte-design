@@ -175,4 +175,4 @@ def store_and_validate_relaxation(inchi_key: str,
     else:
         # Use the new geometry as input to the function
         logger.info(f'{calc_name} on {inchi_key} did not converge')
-        return (new_structure,), {}
+        return (), {'structure': new_structure}

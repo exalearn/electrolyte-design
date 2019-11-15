@@ -31,11 +31,12 @@ def submit_or_none(new_inputs: Optional[Tuple[Tuple[Any], Dict[str, Any]]],
         (AppFuture) Future for the simulation function
     """
     if new_inputs is not None:
-        logger.info(f'Resubmitting {simulate_func.__name__}')
+        logger.info('Submitting a new function')
         args, kwargs = new_inputs
         return simulate_func(*args, **kwargs)
     else:
         if cleanup_func is not None:
+            logger.info('Cleaning up')
             cleanup_func()
         return None
 
