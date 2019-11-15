@@ -86,7 +86,6 @@ def robust_relaxation(inchi_key: str, calc_name: str, gaussian_cmd: List[str],
                         calc_name=calc_name, gaussian_cmd=gaussian_cmd,
                         geom_name=geom_name, collection=collection,
                         gridfs=gridfs, **kwargs)
-    cleanup_fun = partial(shutil.rmtree, run_dir)
 
     # Resubmit if needed
-    return submit_or_none(new_structure, rerun_fun, cleanup_fun)
+    return submit_or_none(new_structure, rerun_fun)

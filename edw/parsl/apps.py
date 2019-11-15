@@ -161,7 +161,7 @@ def store_and_validate_relaxation(inchi_key: str,
 
     # Store whether the calculation converged
     collection.update_one({'inchi_key': inchi_key},
-                          {'$set':
+                          {'$update':
                               {f'calculation.{calc_name}': {
                                   'validated': converged
                               }}})
