@@ -27,11 +27,11 @@ import os
 os.makedirs('logs', exist_ok=True)
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO,
-                    handlers=RotatingFileHandler(
+                    handlers=[RotatingFileHandler(
                         filename=os.path.join('logs', 'get_charged_geometries.log'),
                         maxBytes=1024 * 1024 * 16,
                         backupCount=4
-                    ))
+                    )])
 logger = logging.getLogger(__name__)
 
 # Parse user arguments
@@ -59,10 +59,10 @@ config = Config(
             provider=SlurmProvider(
                 partition='bdwall',
                 launcher=SrunLauncher(),
-                nodes_per_block=1,
+                nodes_per_block=4,
                 init_blocks=0,
                 min_blocks=0,
-                max_blocks=10,
+                max_blocks=20,
                 worker_init='''
 module load gaussian/16-a.03
 export GAUSS_SCRDIR=/scratch
