@@ -6,12 +6,13 @@ import argparse
 # Parse input arguments
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('password', help='Password for the service')
-arg_parser.add_argument('--address', help='Address to QCFractal service', default='localhost:7874', type=str)
+arg_parser.add_argument('--address', help='Address to QCFractal service',
+                        default='localhost:7874', type=str)
 args = arg_parser.parse_args()
 
 # Make the FractalClient
 client = FractalClient(args.address, verify=False, username='user', password=args.password)
-mols = client.query_molecules(limit=1000)
+mols = client.query_molecules(limit=1)
 
 # Make a charged version of each molecule and submit the molecule and charge
 for name, charge in zip(['reduced', 'oxidized'], [-1, 1]):
@@ -25,7 +26,8 @@ for name, charge in zip(['reduced', 'oxidized'], [-1, 1]):
         new_mols.append(new_mol)
 
     # Add the molecules to server
-    client.add_molecules(new_mols)
+    result = client.add_molecules(new_mols)
+    print(f'Molecules added: {result}')
 
     # Submit optimization records
     spec = {
@@ -33,8 +35,12 @@ for name, charge in zip(['reduced', 'oxidized'], [-1, 1]):
         "qc_spec": {
             "driver": "gradient",
             "method": "b3lyp",
-            "basis": "6-31G(2df,p)",
+            "basis": "sto-3g",
             "program": "psi4"
         },
     }
-    client.add_procedure("optimization", "geometric", spec, new_mols)
+    result = client.add_compute(program='psi4', driver='energy', method='b3lyp',
+                                basis='6-31G(2df,p)', molecule=new_mols)
+    print(f'Started compute: {result}')
+    result = client.add_procedure("optimization", "geometric", spec, new_mols)
+    print(f'Started procedure: {result}')
