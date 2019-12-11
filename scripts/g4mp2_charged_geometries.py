@@ -1,17 +1,20 @@
 from parsl.executors import ThreadPoolExecutor, HighThroughputExecutor
-from parsl.providers import CobaltProvider
-from parsl.launchers import SimpleLauncher
+from parsl.providers import SlurmProvider
+from parsl.launchers import SrunLauncher
 from parsl.addresses import address_by_hostname
 from parsl.config import Config
 from concurrent.futures import as_completed
 from pymongo import MongoClient
-from edw.actions import mongo, nwchem
+from edw.actions import mongo, gaussian
 from edw.parsl import apps
 from gridfs import GridFS
 from tqdm import tqdm
 import argparse
 import parsl
+import os
 
+# Define how to launch Gaussian
+gaussian_cmd = ['g16']
 
 # Parse user arguments
 arg_parser = argparse.ArgumentParser()
@@ -21,60 +24,35 @@ arg_parser.add_argument('--mongo-host', help='Hostname for the MongoDB',
                         default='localhost', type=str)
 arg_parser.add_argument('--limit', help='Maximum number of molecules to run',
                         default=0, type=int)
-arg_parser.add_argument('--nodes-per-job', help='Number of nodes per nwchem job',
-                        default=8, type=int)
 arg_parser.add_argument('--request-size', help='Number of nodes to request per allocation',
-                        default=8, type=int)
-arg_parser.add_argument('--jobs')
+                        default=1, type=int)
 args = arg_parser.parse_args()
-
-# Define how to launch NWChem
-ranks_per_node = 16
-threads_per_rank = 4
-threads_per_core = 1
-nwchem_cmd = ['aprun', '-n', f'{args.nodes_per_job * ranks_per_node}',
-              '-N', f'{ranks_per_node}',
-              '-d', f'{threads_per_rank}',
-              '-cc', 'depth',
-              '--env', f'OMP_NUM_THREADS={threads_per_rank}',
-              '--env', f'MKL_NUM_THREADS={threads_per_rank}',
-              '-j', f'{threads_per_core}',
-              '/soft/applications/nwchem/6.8/bin/nwchem']
-print('NWChem command: ', ' '.join(nwchem_cmd))
-
-# Determine the number of workers per executor
-max_workers = args.request_size // args.nodes_per_job
 
 # Make a executor
 config = Config(
+    app_cache=False,
+    retries=2,
     executors=[
         HighThroughputExecutor(
-            label='theta_aprun',
+            label='bebop_gaussian',
             address=address_by_hostname(),
-            max_workers=max_workers,
-            provider=CobaltProvider(
-                queue='debug-cache-quad',
-                launcher=SimpleLauncher(),
-                nodes_per_block=8,
+            max_workers=1,
+            provider=SlurmProvider(
+                partition='bdwall',
+                launcher=SrunLauncher(),
+                nodes_per_block=args.request_size,
                 init_blocks=0,
                 min_blocks=0,
-                max_blocks=1,
-                account='CSC249ADCD08',
-                cmd_timeout=60,
+                max_blocks=20,
                 worker_init='''
-export PATH="/home/lward/miniconda3/bin:$PATH"
-source activate edw
-module load atp
-export MPICH_GNI_MAX_EAGER_MSG_SIZE=16384
-export MPICH_GNI_MAX_VSHORT_MSG_SIZE=10000
-export MPICH_GNI_MAX_EAGER_MSG_SIZE=131072
-export MPICH_GNI_NUM_BUFS=300
-export MPICH_GNI_NDREG_MAXSIZE=16777216
-export MPICH_GNI_MBOX_PLACEMENT=nic
-export MPICH_GNI_LMT_PATH=disabled
-export COMEX_MAX_NB_OUTSTANDING=6
-export LD_LIBRARY_PATH=/soft/compilers/intel/19.0.3.199/compilers_and_libraries_2019.3.199/linux/mkl/lib/intel64:$LD_LIBRARY_PATH''',
-                walltime="1:00:00"
+module load gaussian/16-a.03
+export GAUSS_SCRDIR=/scratch
+export GAUSS_WDEF="$(scontrol show hostname $SLURM_JOB_NODELIST | paste -d, -s)"
+export GAUSS_CDEF=0-35
+export GAUSS_MDEF=100GB
+export GAUSS_SDEF=ssh
+export GAUSS_LFLAGS="-vv"''',
+               walltime="12:00:00"
             )
         )
     ]
@@ -93,9 +71,6 @@ query = {
 projection = ['inchi_key', 'geometry.oxidized', 'geometry.reduced']
 n_records = collection.count_documents(query)
 cursor = collection.find(query, projection, limit=args.limit)
-if args.limit > 0:
-    n_records = min(n_records, args.limit)
-    print(f'Only running {n_records} of them')
 
 if args.dry_run:
     print(f'Found {n_records} records')
@@ -125,31 +100,26 @@ for record in tqdm(cursor, desc='Submitted', total=n_records):
     rid = record['inchi_key']
     for charge in [-1, 1]:
         # Get the geometry for this charge state
-        name = 'oxidized' if charge == -1 else 'reduced'
+        name = 'oxidized' if charge == 1 else 'reduced'
         xyz = record['geometry'][name]
 
-        # Make the input configuration
-        #  TODO(wardlt): Hard-coding 3000mb for Theta memory maximum
-        task_cfgs, input_cfgs = nwchem.generate_g4mp2_configs(charge, '3000 mb')
-
-        # Submit the NWCHem jobs
-        for level in task_cfgs:
-            calculation_name = f'{rid}-{name}-{level}'
-            task_cfg = task_cfgs[level]
-            input_cfg = input_cfgs[level]
-            input_file = nwchem.make_input_file(xyz, task_cfg, input_cfg)
-            calc = apps.run_nwchem(calculation_name, input_file, nwchem_cmd=nwchem_cmd)
-            data = apps.match_future_with_inputs((rid, level, charge), calc)
-            jobs.append(data)
+        # Submit the Gaussian jobs
+        run_dir = os.path.join('gaussian-run', f'{rid}_{name}_g4mp2')
+        os.makedirs(run_dir, exist_ok=True)
+        input_file = gaussian.make_input_file(xyz, functional='g4mp2', basis_set='', charge=charge)
+        calc = apps.run_gaussian(gaussian_cmd, input_file, run_dir)
+        data = apps.match_future_with_inputs((rid, charge), calc)
+        jobs.append(data)
 
 for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
     tag, result = j.result()
 
     # Get the inchi key and charge
-    inchi_key, level, charge = tag
+    inchi_key, charge = tag
 
     # Store the calculation results
-    name = f'oxidized_{level}' if charge == 1 else f'reduced_{level}'
+    name = f'oxidized_g4mp2' if charge == 1 else f'reduced_g4mp2'
     mongo.add_calculation(collection, gridfs, inchi_key, name,
                           result['input_file'], result['output_file'], 'Gaussian',
                           result['successful'])
+
