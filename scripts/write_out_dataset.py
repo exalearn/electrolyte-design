@@ -36,11 +36,16 @@ for record in tqdm(cursor, total=total_count, desc='Extracting energies'):
 
         # Access the archive string at the end
         output_text = gridfs.get(record['calculation'][calc_name]['output_file']).read().decode()
-        g4mp2_match = re.search(r'G4MP2=([-\d.0]+)', output_text)
-        g4mp2_energy = float(g4mp2_match.group(1))
+        g4mp2_match = re.search(r'G4MP2=([-\d.\s]+)', output_text)
+        g4mp2_energy = float(re.sub(r'\s', '', g4mp2_match.group(1)))
+
+        # Also get the B3LYP energy
+        b3lyp_match = re.search(r'E\(UB3LYP\) = +([-\d.]+)', output_text)
+        b3lyp_energy = float(re.sub(r'\s', '', b3lyp_match.group(1)))
 
         # Add the energy to the database
         mongo.add_property(collection, rid, f'u0_{charge_state}', 'g4mp2', g4mp2_energy)
+        mongo.add_property(collection, rid, f'u0_{charge_state}', 'b3lyp', b3lyp_energy)
 
 # Loop through and dump out the energies
 cursor = collection.find(query)
