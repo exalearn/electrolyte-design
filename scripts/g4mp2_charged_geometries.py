@@ -66,7 +66,9 @@ collection = mongo.initialize_collection(client)
 # Get the workload
 query = {
     'geometry.oxidized': {'$exists': True},
-    'geometry.reduced': {'$exists': True}
+    'geometry.reduced': {'$exists': True},
+    'calculation.reduced_g4mp2': {'$exists': False},
+    'calculation.oxidized_g4mp2': {'$exists': False}
 }
 projection = ['inchi_key', 'geometry.oxidized', 'geometry.reduced']
 n_records = collection.count_documents(query)
