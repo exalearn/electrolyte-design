@@ -108,7 +108,7 @@ for record in tqdm(cursor, desc='Submitted', total=n_records):
         # Submit the Gaussian jobs
         run_dir = os.path.join('gaussian-run', f'{rid}_{name}_g4mp2')
         os.makedirs(run_dir, exist_ok=True)
-        input_file = gaussian.make_input_file(xyz, functional='g4mp2', basis_set='', charge=charge)
+        input_file = gaussian.make_input_file(xyz, functional='g4mp2', basis_set='', charge=charge, route_parameters={'maxdisk': '300GB'})
         calc = apps.run_gaussian(gaussian_cmd, input_file, run_dir)
         data = apps.match_future_with_inputs((rid, charge), calc)
         jobs.append(data)
