@@ -1,4 +1,5 @@
 """Add some molecules"""
+from qcportal.collections import OptimizationDataset
 from qcportal.client import FractalClient
 from qcportal import Molecule
 import pandas as pd
@@ -17,13 +18,14 @@ args = arg_parser.parse_args()
 client = FractalClient(args.address, verify=False, username='user', password=args.password)
 
 # Assemble the dataset
-coll = client.get_collection('OptimizationDataset', name='NWCHem+Geometric Relaxation')
+coll = OptimizationDataset.from_server(name='NWCHem+Geometric Relaxation', client=client)
 specs = coll.list_specifications(description=False)
 print(f'Found the following specifications: {specs}')
 
-if "default" not in specs:
+if "tight" not in specs:
     print('Setting up computation settings...')
 
+    # A full-accuracy version
     spec = {
         'name': 'default',
         'description': 'Geometric + NWChem/B3LYP/6-31g(2df,p).',
@@ -34,6 +36,45 @@ if "default" not in specs:
             'driver': 'gradient',
             'method': 'b3lyp',
             'basis': '6-31g(2df,p)',
+            'program': 'nwchem'
+        }
+    }
+    coll.add_specification(**spec)
+    
+    # A full-accuracy version with tighter convergence
+    tight_kwds = client.add_keywords([{'values': {
+        'dft__convergence__energy': '1e-8',
+        'dft__convergence__density': '1e-7',
+        'dft__convergence__gradient': '5e-6'
+    }, 'comments': 'Tight convergence settings for NWChem'}])[0]
+    spec = {
+        'name': 'tight',
+        'description': 'Geometric + NWChem/B3LYP/6-31g(2df,p) with a tighter convergence threshold.',
+        'optimization_spec': {
+            'program': 'geometric',
+            'keywords': None
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '6-31g(2df,p)',
+            'program': 'nwchem',
+            'keywords': tight_kwds
+        }
+    }
+
+    coll.add_specification(**spec)
+
+    # A reduced-accuracy version
+    spec = {
+        'name': 'low_fidelity',
+        'description': 'Geometric + NWChem/B3LYP/3-21g.',
+        'optimization_spec': {
+            'program': 'geometric',
+            'keywords': None
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '3-21g',
             'program': 'nwchem'
         }
     }
@@ -69,5 +110,6 @@ for mol in mols_to_add:
 coll.save()
 
 # Trigger the calculations
-n_started = coll.compute('default')
-print(f'Started {n_started} calculations')
+for spec in specs:
+    n_started = coll.compute(spec)
+    print(f'Started {n_started} {spec} calculations')
