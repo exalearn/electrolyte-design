@@ -5,6 +5,85 @@ from qcportal import Molecule
 import pandas as pd
 import argparse
 
+# Hard-coded stuff
+coll_name = 'NWChem+Geometric Relaxation Test'
+def create_specs(client: FractalClient):
+    """Make the desired specifications for our tests
+    
+    Requires using keyword sets, hence the need for the client.
+    
+    Args:
+        client (FractalClient): Client used for making found_specs
+    """
+
+    # Make the keyword sets
+    fine_kwds, xfine_kwds = client.add_keywords([
+        {'values': {
+            'dft__convergence__energy': '1e-7',
+            'dft__convergence__density': '1e-6',
+            'dft__convergence__gradient': '5e-5',
+            'dft__grid': 'fine'
+        }, 'comments': 'Tight convergence settings for NWChem'},
+        {'values': {
+            'dft__convergence__energy': '1e-7',
+            'dft__convergence__density': '1e-6',
+            'dft__convergence__gradient': '5e-5',
+            'dft__grid': 'xfine'
+        }, 'comments': 'Very tight convergence settings for NWChem'}
+    ])
+
+    # Return the specifications
+    return [{
+        'name': 'small_basis',
+        'description': 'Geometric + NWChem/B3LYP/3-21g.',
+        'optimization_spec': {
+            'program': 'geometric',
+            'keywords': None
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '3-21g',
+            'program': 'nwchem'
+        }
+    }, {
+        'name': 'default',
+        'description': 'Geometric + NWChem/B3LYP/6-31g(2df,p).',
+        'optimization_spec': {
+            'program': 'geometric',
+            'keywords': None
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '6-31g(2df,p)',
+            'program': 'nwchem'
+        }
+    }, {
+        'name': 'default_fine',
+        'description': 'Geometric + NWChem/B3LYP/6-31g(2df,p) with fine convergence.',
+        'optimization_spec': {
+            'program': 'geometric',
+            'keywords': None
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '6-31g(2df,p)',
+            'program': 'nwchem',
+            'keywords': fine_kwds
+        }
+    }, {
+        'name': 'small_basis_fine',
+        'description': 'Geometric + NWChem/B3LYP/3-21g(2df,p) with fine convergence.',
+        'optimization_spec': {
+            'program': 'geometric',
+            'keywords': None
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '6-31g(2df,p)',
+            'program': 'nwchem',
+            'keywords': fine_kwds
+    }}]
+
 # Parse input arguments
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('--limit', help='Number of molecules to add. -1 to add all', default=1, type=int)
@@ -18,69 +97,21 @@ args = arg_parser.parse_args()
 client = FractalClient(args.address, verify=False, username='user', password=args.password)
 
 # Assemble the dataset
-coll = OptimizationDataset.from_server(name='NWCHem+Geometric Relaxation', client=client)
-specs = coll.list_specifications(description=False)
-print(f'Found the following specifications: {specs}')
-
-if "tight" not in specs:
-    print('Setting up computation settings...')
-
-    # A full-accuracy version
-    spec = {
-        'name': 'default',
-        'description': 'Geometric + NWChem/B3LYP/6-31g(2df,p).',
-        'optimization_spec': {
-            'program': 'geometric',
-            'keywords': None
-        }, 'qc_spec': {
-            'driver': 'gradient',
-            'method': 'b3lyp',
-            'basis': '6-31g(2df,p)',
-            'program': 'nwchem'
-        }
-    }
-    coll.add_specification(**spec)
-    
-    # A full-accuracy version with tighter convergence
-    tight_kwds = client.add_keywords([{'values': {
-        'dft__convergence__energy': '1e-8',
-        'dft__convergence__density': '1e-7',
-        'dft__convergence__gradient': '5e-6'
-    }, 'comments': 'Tight convergence settings for NWChem'}])[0]
-    spec = {
-        'name': 'tight',
-        'description': 'Geometric + NWChem/B3LYP/6-31g(2df,p) with a tighter convergence threshold.',
-        'optimization_spec': {
-            'program': 'geometric',
-            'keywords': None
-        }, 'qc_spec': {
-            'driver': 'gradient',
-            'method': 'b3lyp',
-            'basis': '6-31g(2df,p)',
-            'program': 'nwchem',
-            'keywords': tight_kwds
-        }
-    }
-
-    coll.add_specification(**spec)
-
-    # A reduced-accuracy version
-    spec = {
-        'name': 'low_fidelity',
-        'description': 'Geometric + NWChem/B3LYP/3-21g.',
-        'optimization_spec': {
-            'program': 'geometric',
-            'keywords': None
-        }, 'qc_spec': {
-            'driver': 'gradient',
-            'method': 'b3lyp',
-            'basis': '3-21g',
-            'program': 'nwchem'
-        }
-    }
-
-    coll.add_specification(**spec)
+try:
+    coll = OptimizationDataset.from_server(name=coll_name, client=client)
+except KeyError:
+    coll = OptimizationDataset(name=coll_name, client=client)
     coll.save()
+
+# Make sure it has the right calculation specs
+found_specs = coll.list_specifications(description=False)
+print(f'Found the following specifications: {found_specs}')
+desired_specs = create_specs(client)
+for spec in desired_specs:
+    if spec["name"] not in found_specs:
+        print(f'Adding a new spec: {spec["name"]}')
+        coll.add_specification(**spec)
+coll.save()
 
 # Get the current list of molecules
 existing_mols = coll.df.index
@@ -110,6 +141,6 @@ for mol in mols_to_add:
 coll.save()
 
 # Trigger the calculations
-for spec in specs:
-    n_started = coll.compute(spec)
-    print(f'Started {n_started} {spec} calculations')
+for spec in desired_specs:
+    n_started = coll.compute(spec['name'])
+    print(f'Started {n_started} {spec[']} calculations')
