@@ -84,7 +84,7 @@ collection = mongo.initialize_collection(client)
 
 # Set up the query for molecules without
 query = {
-    'subset': 'holdout',
+    'details.n_heavy_atoms': {'$lte': 7},
     '$or': [{'calculation.oxidized_b3lyp': {'$exists': False}},
             {'calculation.reduced_b3lyp': {'$exists': False}}]
 }
