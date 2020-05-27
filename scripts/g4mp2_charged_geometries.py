@@ -1,155 +1,118 @@
-from parsl.executors import ThreadPoolExecutor, HighThroughputExecutor
-from parsl.providers import CobaltProvider
-from parsl.launchers import SimpleLauncher
-from parsl.addresses import address_by_hostname
-from parsl.config import Config
-from concurrent.futures import as_completed
-from pymongo import MongoClient
-from edw.actions import mongo, nwchem
-from edw.parsl import apps
-from gridfs import GridFS
-from tqdm import tqdm
+"""Run the G4MP2 calculations for a set of molecules"""
+from qcelemental.models import Molecule
+from qcportal.client import FractalClient
+from qcportal.collections import Dataset
+from qcportal.models import KeywordSet
+import pandas as pd
 import argparse
-import parsl
+
+# Hard-coded stuff
 
 
-# Parse user arguments
+coll_name = 'NWChem G4MP2 Charged'
+
+# Hard-coded specifications
+g4mp2_specs = [{
+    "method": "ccsd(t)",
+    "basis": "6-31G*",
+    "tag": "g4mp2_tce",  # Means to use 8 cores per rank
+    "keywords": {
+        "scf__uhf": True, "tce__freeze": True,
+        "ccsd__freeze": "atomic", "qc_module": True,
+    }
+}, {
+    "method": "scf",
+    "basis": "G3MP2largeXP",
+    "tag": "g4mp2",  # Uses 2 cores per rank
+    "keywords": {"scf__uhf": True}
+}, {
+    "method": "scf",
+    "basis": "g4mp2-aug-cc-pvqz",
+    "tag": "g4mp2",
+    "keywords": {"scf__uhf": True}
+}, {
+    "method": "scf",
+    "basis": "g4mp2-aug-cc-pvtz",
+    "tag": "g4mp2",
+    "keywords": {"scf__uhf": True}
+}, {
+    "method": "mp2",
+    "basis": "G3MP2largeXP",
+    "tag": "g4mp2",
+    "keywords": {
+        "scf__uhf": True, "tce__freeze": True, "ccsd__freeze": "atomic"
+    }
+}]
+
+# Parse input arguments
 arg_parser = argparse.ArgumentParser()
-arg_parser.add_argument('--dry-run', help='Whether to just get workload',
-                        action='store_true', default=False)
-arg_parser.add_argument('--mongo-host', help='Hostname for the MongoDB',
-                        default='localhost', type=str)
-arg_parser.add_argument('--limit', help='Maximum number of molecules to run',
-                        default=0, type=int)
-arg_parser.add_argument('--nodes-per-job', help='Number of nodes per nwchem job',
-                        default=8, type=int)
-arg_parser.add_argument('--request-size', help='Number of nodes to request per allocation',
-                        default=8, type=int)
-arg_parser.add_argument('--jobs')
+arg_parser.add_argument('--limit', help='Number of molecules to add. -1 to add all', default=1, type=int)
+arg_parser.add_argument('password', help='Password for the service')
+arg_parser.add_argument('--address', help='Address to QCFractal service', default='localhost:7874', type=str)
+arg_parser.add_argument('--file', help='File containing geometries computed from Gaussian', type=str)
 args = arg_parser.parse_args()
 
-# Define how to launch NWChem
-ranks_per_node = 16
-threads_per_rank = 4
-threads_per_core = 1
-nwchem_cmd = ['aprun', '-n', f'{args.nodes_per_job * ranks_per_node}',
-              '-N', f'{ranks_per_node}',
-              '-d', f'{threads_per_rank}',
-              '-cc', 'depth',
-              '--env', f'OMP_NUM_THREADS={threads_per_rank}',
-              '--env', f'MKL_NUM_THREADS={threads_per_rank}',
-              '-j', f'{threads_per_core}',
-              '/soft/applications/nwchem/6.8/bin/nwchem']
-print('NWChem command: ', ' '.join(nwchem_cmd))
+# Make the FractalClient
+client = FractalClient(args.address, verify=False, username='user', password=args.password)
 
-# Determine the number of workers per executor
-max_workers = args.request_size // args.nodes_per_job
+# Make or access the G4MP2 Dataset
+colls = client.list_collections(collection_type='Dataset', aslist=True)
+if coll_name not in colls:
+    print('Initializing dataset')
 
-# Make a executor
-config = Config(
-    executors=[
-        HighThroughputExecutor(
-            label='theta_aprun',
-            address=address_by_hostname(),
-            max_workers=max_workers,
-            provider=CobaltProvider(
-                queue='debug-cache-quad',
-                launcher=SimpleLauncher(),
-                nodes_per_block=8,
-                init_blocks=0,
-                min_blocks=0,
-                max_blocks=1,
-                account='CSC249ADCD08',
-                cmd_timeout=60,
-                worker_init='''
-export PATH="/home/lward/miniconda3/bin:$PATH"
-source activate edw
-module load atp
-export MPICH_GNI_MAX_EAGER_MSG_SIZE=16384
-export MPICH_GNI_MAX_VSHORT_MSG_SIZE=10000
-export MPICH_GNI_MAX_EAGER_MSG_SIZE=131072
-export MPICH_GNI_NUM_BUFS=300
-export MPICH_GNI_NDREG_MAXSIZE=16777216
-export MPICH_GNI_MBOX_PLACEMENT=nic
-export MPICH_GNI_LMT_PATH=disabled
-export COMEX_MAX_NB_OUTSTANDING=6
-export LD_LIBRARY_PATH=/soft/compilers/intel/19.0.3.199/compilers_and_libraries_2019.3.199/linux/mkl/lib/intel64:$LD_LIBRARY_PATH''',
-                walltime="1:00:00"
-            )
-        )
-    ]
-)
+    # Make the dataset
+    coll = Dataset(name=coll_name, client=client)
+    coll.set_default_program("nwchem")
 
-# Connect to MongoDB
-client = MongoClient(args.mongo_host)
-gridfs = GridFS(client.get_database('jcesr'))
-collection = mongo.initialize_collection(client)
-
-# Get the workload
-query = {
-    'geometry.oxidized': {'$exists': True},
-    'geometry.reduced': {'$exists': True}
-}
-projection = ['inchi_key', 'geometry.oxidized', 'geometry.reduced']
-n_records = collection.count_documents(query)
-cursor = collection.find(query, projection, limit=args.limit)
-if args.limit > 0:
-    n_records = min(n_records, args.limit)
-    print(f'Only running {n_records} of them')
-
-if args.dry_run:
-    print(f'Found {n_records} records')
-    next_record = cursor.next()
-    next_record.pop('_id')
-    print(f'First record:\n{next_record}')
-    exit()
-
-# Add local threads to the config
-config.executors.append(ThreadPoolExecutor(label='local_threads'))
-
-# Set up parsl
-parsl.load(config)
-
-# Mark which apps cannot use the local_threads apps
-worker_execs = [x.label for x in config.executors if x.label != 'local_threads']
-for app_name in apps.__all__:
-    app = getattr(apps, app_name)
-    if app.executors == 'all':
-        app.executors = worker_execs
-        print(f'Assigned app {app_name} to executors: {app.executors}')
+else:
+    print('Retrieving dataset from server')
+    coll = Dataset.from_server(client, name=coll_name)
 
 
-# Assemble the workflow
-jobs = []
-for record in tqdm(cursor, desc='Submitted', total=n_records):
-    rid = record['inchi_key']
-    for charge in [-1, 1]:
-        # Get the geometry for this charge state
-        name = 'oxidized' if charge == -1 else 'reduced'
-        xyz = record['geometry'][name]
+# Load in the molecules to be computed
+mols = pd.read_csv(args.file)
+print(f'Found {len(mols)}')
+if args.limit >= 0:
+    mols = mols.iloc[:args.limit]
+    print(f'Sampled down to {len(mols)}')
 
-        # Make the input configuration
-        #  TODO(wardlt): Hard-coding 3000mb for Theta memory maximum
-        task_cfgs, input_cfgs = nwchem.generate_g4mp2_configs(charge, '3000 mb')
+# Add them to the dataset
+existing_entries = coll.get_entries().index
+for _, mol in mols.iterrows():
 
-        # Submit the NWCHem jobs
-        for level in task_cfgs:
-            calculation_name = f'{rid}-{name}-{level}'
-            task_cfg = task_cfgs[level]
-            input_cfg = input_cfgs[level]
-            input_file = nwchem.make_input_file(xyz, task_cfg, input_cfg)
-            calc = apps.run_nwchem(calculation_name, input_file, nwchem_cmd=nwchem_cmd)
-            data = apps.match_future_with_inputs((rid, level, charge), calc)
-            jobs.append(data)
+    # Do the anion and cation
+    for k in ['reduced', 'oxidized']:
+        if k == 'oxidized':
+            charge = 1
+        elif k == 'reduced':
+            charge = -1
+        else:
+            raise ValueError('Look for a typo!')
+        molobj = Molecule.from_data(mol[f'xyz_{k}'],
+                                    molecular_charge=charge,
+                                    name=f'{mol["smiles"]}_{k}_g16')
 
-for j in tqdm(as_completed(jobs), desc='Completed', total=len(jobs)):
-    tag, result = j.result()
+        if molobj.name not in existing_entries:
+            coll.add_entry(molobj.name, molobj)
 
-    # Get the inchi key and charge
-    inchi_key, level, charge = tag
+coll.save()
 
-    # Store the calculation results
-    name = f'oxidized_{level}' if charge == 1 else f'reduced_{level}'
-    mongo.add_calculation(collection, gridfs, inchi_key, name,
-                          result['input_file'], result['output_file'], 'Gaussian',
-                          result['successful'])
+# Add in the specifications
+for spec in g4mp2_specs:
+    # Add the keywords to the dataset, use the alias
+    spec = spec.copy()
+    kw_name = f'{spec["method"]}-{spec["basis"]}'.lower()
+    kwset = KeywordSet(values=spec["keywords"],
+                       comments=f"Keywords for G4MP2 component: {spec['method']}/{spec['basis']}")
+    try:
+        coll.get_keywords(alias=kw_name, program='nwchem')
+    except KeyError:
+        coll.add_keywords(alias=kw_name, program="nwchem", keyword=kwset)
+        coll.save()
+
+    spec["keywords"] = kw_name
+
+    # Add the spec to the dataset
+    result = coll.compute(program='nwchem', **spec)
+coll.save()
+print(f'Done: {result}')
