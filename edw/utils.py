@@ -1,3 +1,5 @@
+"""Utilities related to Python"""
+
 import contextlib
 import os
 
