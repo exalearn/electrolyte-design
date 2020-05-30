@@ -1,17 +1,15 @@
 """Run the G4MP2 calculations for a set of molecules"""
 from qcelemental.models import Molecule
-from qcportal.client import FractalClient
-from qcportal.collections import Dataset
-from qcportal.models import KeywordSet
+from qcfractal.interface.client import FractalClient
+from qcfractal.interface.collections import Dataset
+from qcfractal.interface.models import KeywordSet
+from tqdm import tqdm
 import pandas as pd
 import argparse
 
 # Hard-coded stuff
-
-
-coll_name = 'NWChem G4MP2 Charged'
-
-# Hard-coded specifications
+eng_coll_name = 'NWChem G4MP2 Charged'
+hess_coll_name = 'NWChem G4MP2 Charged, Hessian'
 g4mp2_specs = [{
     "method": "ccsd(t)",
     "basis": "6-31G*",
@@ -43,6 +41,11 @@ g4mp2_specs = [{
         "scf__uhf": True, "tce__freeze": True, "ccsd__freeze": "atomic"
     }
 }]
+zpe_spec = {
+    "method": "slater 0.8 HFexch 0.2 becke88 nonlocal 0.72 vwn_3 0.19 lyp 0.81",
+    "basis": "6-31G(2df,p)",
+    "tag": "g4mp2_zpe"
+}
 
 # Parse input arguments
 arg_parser = argparse.ArgumentParser()
@@ -56,17 +59,30 @@ args = arg_parser.parse_args()
 client = FractalClient(args.address, verify=False, username='user', password=args.password)
 
 # Make or access the G4MP2 Dataset
+#  Energy calculations
 colls = client.list_collections(collection_type='Dataset', aslist=True)
-if coll_name not in colls:
+if eng_coll_name not in colls:
     print('Initializing dataset')
 
     # Make the dataset
-    coll = Dataset(name=coll_name, client=client)
-    coll.set_default_program("nwchem")
+    eng_coll = Dataset(name=eng_coll_name, client=client)
+    eng_coll.set_default_program("nwchem")
 
 else:
     print('Retrieving dataset from server')
-    coll = Dataset.from_server(client, name=coll_name)
+    eng_coll = Dataset.from_server(client, name=eng_coll_name)
+
+#  Hessian Calculations
+if hess_coll_name not in colls:
+    print('Initializing dataset')
+
+    # Make the dataset
+    hess_coll = Dataset(name=hess_coll_name, client=client)
+    hess_coll.set_default_program("nwchem")
+    hess_coll.set_default_driver("hessian")
+else:
+    print('Retrieving dataset from server')
+    hess_coll = Dataset.from_server(client, name=hess_coll_name)
 
 
 # Load in the molecules to be computed
@@ -76,28 +92,30 @@ if args.limit >= 0:
     mols = mols.iloc[:args.limit]
     print(f'Sampled down to {len(mols)}')
 
-# Add them to the dataset
-existing_entries = coll.get_entries().index
-for _, mol in mols.iterrows():
+# Add them to the datasets
+for coll in [eng_coll, hess_coll]:
+    existing_entries = coll.get_entries().index
+    for _, mol in tqdm(mols.iterrows()):
 
-    # Do the anion and cation
-    for k in ['reduced', 'oxidized']:
-        if k == 'oxidized':
-            charge = 1
-        elif k == 'reduced':
-            charge = -1
-        else:
-            raise ValueError('Look for a typo!')
-        molobj = Molecule.from_data(mol[f'xyz_{k}'],
-                                    molecular_charge=charge,
-                                    name=f'{mol["smiles"]}_{k}_g16')
+        # Do the anion and cation
+        for k in ['reduced', 'oxidized']:
+            if k == 'oxidized':
+                charge = 1
+            elif k == 'reduced':
+                charge = -1
+            else:
+                raise ValueError('Look for a typo!')
+            molobj = Molecule.from_data(mol[f'xyz_{k}'],
+                                        molecular_charge=charge,
+                                        name=f'{mol["smiles"]}_{k}_g16')
 
-        if molobj.name not in existing_entries:
-            coll.add_entry(molobj.name, molobj)
+            if molobj.name not in existing_entries:
+                coll.add_entry(molobj.name, molobj)
 
-coll.save()
+    coll.save()
 
 # Add in the specifications
+#  Energy collection
 for spec in g4mp2_specs:
     # Add the keywords to the dataset, use the alias
     spec = spec.copy()
@@ -105,14 +123,20 @@ for spec in g4mp2_specs:
     kwset = KeywordSet(values=spec["keywords"],
                        comments=f"Keywords for G4MP2 component: {spec['method']}/{spec['basis']}")
     try:
-        coll.get_keywords(alias=kw_name, program='nwchem')
+        eng_coll.get_keywords(alias=kw_name, program='nwchem')
     except KeyError:
-        coll.add_keywords(alias=kw_name, program="nwchem", keyword=kwset)
-        coll.save()
+        eng_coll.add_keywords(alias=kw_name, program="nwchem", keyword=kwset)
+        eng_coll.save()
 
     spec["keywords"] = kw_name
 
     # Add the spec to the dataset
-    result = coll.compute(program='nwchem', **spec)
-coll.save()
-print(f'Done: {result}')
+    result = eng_coll.compute(program='nwchem', **spec)
+eng_coll.save()
+print(f'Submitted energy calculations: {result}')
+
+#  Hessian Collection
+result = hess_coll.compute(**zpe_spec)
+hess_coll.save()
+print(f'Submitted hessian calculations: {result}')
+

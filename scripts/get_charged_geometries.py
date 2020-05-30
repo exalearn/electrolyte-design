@@ -70,9 +70,9 @@ def create_specs(client: FractalClient):
             'program': 'nwchem',
             'keywords': fine_kwds
         }
-    }, {
-        'name': 'small_basis_fine',
-        'description': 'Geometric + NWChem/B3LYP/3-21g(2df,p) with fine convergence.',
+    },{
+        'name': 'default_xfine',
+        'description': 'Geometric + NWChem/B3LYP/6-31g(2df,p) with xfine convergence.',
         'optimization_spec': {
             'program': 'geometric',
             'keywords': None
@@ -80,6 +80,19 @@ def create_specs(client: FractalClient):
             'driver': 'gradient',
             'method': 'b3lyp',
             'basis': '6-31g(2df,p)',
+            'program': 'nwchem',
+            'keywords': xfine_kwds
+        }
+    },{
+        'name': 'small_basis_fine',
+        'description': 'Geometric + NWChem/B3LYP/3-21g with fine convergence.',
+        'optimization_spec': {
+            'program': 'geometric',
+            'keywords': None
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '3-21g',
             'program': 'nwchem',
             'keywords': fine_kwds
     }}]
@@ -109,7 +122,6 @@ print(f'Found the following specifications: {found_specs}')
 desired_specs = create_specs(client)
 for spec in desired_specs:
     if spec["name"] not in found_specs:
-        print(f'Adding a new spec: {spec["name"]}')
         coll.add_specification(**spec)
 coll.save()
 
@@ -143,4 +155,4 @@ coll.save()
 # Trigger the calculations
 for spec in desired_specs:
     n_started = coll.compute(spec['name'])
-    print(f'Started {n_started} {spec[']} calculations')
+    print(f'Started {n_started} {spec["name"]} calculations')

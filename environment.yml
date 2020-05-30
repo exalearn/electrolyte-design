@@ -12,7 +12,7 @@ dependencies:
   - matplotlib==3.1.1
   - rdkit==2019.03.4.0
   - openbabel==2.4.1
-  - qcengine==0.11.0
+  - qcengine
   - mongodb==4.0.3
   - pymongo==3.9.0
   - qcportal  # Not specifying a version until NWChem support is complete
