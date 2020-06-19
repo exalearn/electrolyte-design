@@ -46,6 +46,15 @@ for record in tqdm(cursor, total=total_count, desc='Extracting energies'):
         b3lyp_energy = float(re.sub(r'\s', '', b3lyp_match.group(1)))
         mongo.add_property(collection, rid, f'u0_{charge_state}', 'b3lyp', b3lyp_energy)
 
+        # Read the ZPE
+        zpe_match = re.search(r'E\(ZPE\)= +([-\d.]+)', output_text)
+        if zpe_match is None:
+            did_not_complete.append(rid)
+            continue
+        zpe = float(re.sub(r'\s', '', zpe_match.group(1)))
+        mongo.add_property(collection, rid, f'zpe_{charge_state}', 'g4mp2', zpe)
+
+
         # Read the G4MP2 energy
         g4mp2_match = re.search(r'G4MP2=([-\d.\s]+)', output_text)
         if g4mp2_match is None:
@@ -69,6 +78,10 @@ for record in tqdm(cursor, total=total_count, desc='Saving results'):
     # Store the geometries
     for key, xyz in record['geometry'].items():
         summary[f'xyz_{key}'] = xyz
+
+    # Write out molecule details
+    for key, value in record['details'].items():
+        summary[key] = value
 
     # Store the energies
     for property, values in record['property'].items():
