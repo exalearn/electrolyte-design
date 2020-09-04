@@ -70,6 +70,8 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
 
     # Get the characteristic temperatures of all vibrations
     freqs = compute_frequencies(hessian, molecule, units)
+    freqs = constants.ureg.Quantity(freqs, 'Hz')
+    wavenumbers = (freqs / c / 2 / np.pi).to("cm^-1")
 
     # Scale them
     freqs *= scaling
@@ -85,6 +87,7 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
     #  Convert the frequencies to characteristic temps
     freqs = constants.ureg.Quantity(freqs, 'Hz')
     temps = (h * freqs / kb)
+    print(temps)
 
     # Compute the ZPE
     zpe = r * temps.sum() / 2

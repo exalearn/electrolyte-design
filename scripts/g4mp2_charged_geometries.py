@@ -13,38 +13,46 @@ hess_coll_name = 'NWChem G4MP2 Charged, Hessian'
 g4mp2_specs = [{
     "method": "ccsd(t)",
     "basis": "6-31G*",
-    "tag": "g4mp2_tce",  # Means to use 8 cores per rank
+    "tag": "g4mp2_tce",  # Maps to a manager with 8 cores per rank
     "keywords": {
         "scf__uhf": True, "tce__freeze": True,
-        "ccsd__freeze": "atomic", "qc_module": True,
+        "ccsd__freeze": "atomic", "qc_module": True
     }
 }, {
     "method": "scf",
     "basis": "G3MP2largeXP",
     "tag": "g4mp2",  # Uses 2 cores per rank
-    "keywords": {"scf__uhf": True}
+    "keywords": {"scf__uhf": True, 'basis__spherical': True}
 }, {
     "method": "scf",
     "basis": "g4mp2-aug-cc-pvqz",
     "tag": "g4mp2",
-    "keywords": {"scf__uhf": True}
+    "keywords": {"scf__uhf": True, 'basis__spherical': True}
 }, {
     "method": "scf",
     "basis": "g4mp2-aug-cc-pvtz",
     "tag": "g4mp2",
-    "keywords": {"scf__uhf": True}
+    "keywords": {"scf__uhf": True, 'basis__spherical': True}
 }, {
     "method": "mp2",
     "basis": "G3MP2largeXP",
     "tag": "g4mp2",
     "keywords": {
-        "scf__uhf": True, "tce__freeze": True, "ccsd__freeze": "atomic"
+        "scf__uhf": True, "tce__freeze": True, "mp2__freeze": "atomic",
+        'basis__spherical': True
     }
 }]
 zpe_spec = {
-    "method": "slater 0.8 HFexch 0.2 becke88 nonlocal 0.72 vwn_3 0.19 lyp 0.81",
+    "method": "b3lyp",
     "basis": "6-31G(2df,p)",
-    "tag": "g4mp2_zpe"
+    "tag": "g4mp2_zpe",
+    "keywords": {
+        'dft__convergence__energy': '1e-7',
+        'dft__convergence__density': '1e-6',
+        'dft__convergence__gradient': '5e-5',
+        'dft__grid': 'xfine',
+        'basis__spherical': True
+    }
 }
 
 # Parse input arguments
@@ -80,6 +88,7 @@ if hess_coll_name not in colls:
     hess_coll = Dataset(name=hess_coll_name, client=client)
     hess_coll.set_default_program("nwchem")
     hess_coll.set_default_driver("hessian")
+    hess_coll.set_default_units('hartree / bohr ** 2')
 else:
     print('Retrieving dataset from server')
     hess_coll = Dataset.from_server(client, name=hess_coll_name)
@@ -87,7 +96,8 @@ else:
 
 # Load in the molecules to be computed
 mols = pd.read_csv(args.file)
-print(f'Found {len(mols)}')
+mols = mols[~mols['u0_reduced.g4mp2'].isnull()]
+print(f'Found {len(mols)} with complete G4MP2 calculations')
 if args.limit >= 0:
     mols = mols.iloc[:args.limit]
     print(f'Sampled down to {len(mols)}')
@@ -95,7 +105,7 @@ if args.limit >= 0:
 # Add them to the datasets
 for coll in [eng_coll, hess_coll]:
     existing_entries = coll.get_entries().index
-    for _, mol in tqdm(mols.iterrows()):
+    for _, mol in tqdm(mols.iterrows(), desc=f'Adding mols to {coll.name}'):
 
         # Do the anion and cation
         for k in ['reduced', 'oxidized']:
@@ -116,12 +126,13 @@ for coll in [eng_coll, hess_coll]:
 
 # Add in the specifications
 #  Energy collection
-for spec in g4mp2_specs:
+for spec in tqdm(g4mp2_specs, desc='Starting G4MP2 energy components'):
     # Add the keywords to the dataset, use the alias
     spec = spec.copy()
     kw_name = f'{spec["method"]}-{spec["basis"]}'.lower()
     kwset = KeywordSet(values=spec["keywords"],
                        comments=f"Keywords for G4MP2 component: {spec['method']}/{spec['basis']}")
+    print(kwset)
     try:
         eng_coll.get_keywords(alias=kw_name, program='nwchem')
     except KeyError:
@@ -136,7 +147,15 @@ eng_coll.save()
 print(f'Submitted energy calculations: {result}')
 
 #  Hessian Collection
+zpe_spec = zpe_spec.copy()
+kwset = KeywordSet(values=zpe_spec["keywords"],
+                   comments="Tight settings used when computing a Hessian")
+try:
+    hess_coll.get_keywords(alias='zpe_fine', program='nwchem')
+except KeyError:
+    hess_coll.add_keywords(alias='zpe_fine', program="nwchem", keyword=kwset)
+    hess_coll.save()
+zpe_spec["keywords"] = 'zpe_fine'
 result = hess_coll.compute(**zpe_spec)
 hess_coll.save()
 print(f'Submitted hessian calculations: {result}')
-
