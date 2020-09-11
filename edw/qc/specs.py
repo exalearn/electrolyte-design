@@ -10,6 +10,13 @@ _nwc_xfine_kwds = {'values': {
     'dft__grid': 'xfine',
     'basis__spherical': True
 }, 'comments': 'Tight convergence settings for NWChem'}
+_nwc_xfine_robust_kwds = {'values': {
+    'dft__convergence__energy': '1e-8',
+    'dft__grid': 'xfine',
+    'dft__iterations': 250,
+    'basis__spherical': True,
+    'geometry__noautoz': True
+}, 'comments': 'Tight convergence settings for NWChem'}
 _xtb_fine_kwgs = {
     "values": {"accuracy": 0.05},
     "comments": "Tight convergence settings for XTB"
@@ -27,6 +34,19 @@ _opt_specs = {
             'driver': 'gradient',
             'method': 'b3lyp',
             'basis': '3-21g',
+            'program': 'nwchem',
+            'keywords': _nwc_xfine_kwds
+        }
+    },
+    'normal_basis': {
+        'name': 'normal_basis',
+        'description': 'geomeTRIC + NWCHem/B3LYP/6-31G(2df,p)',
+        'optimization_spec': {
+            'program': 'geometric',
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '6-31G(2df,p)',
             'program': 'nwchem',
             'keywords': _nwc_xfine_kwds
         }

@@ -12,7 +12,7 @@ from qcfractal.interface import FractalClient
 from qcelemental.physical_constants import constants
 from qcfractal.interface.collections import OptimizationDataset, Dataset
 from qcfractal.interface.collections.collection import Collection
-from qcfractal.interface.models import ComputeResponse, OptimizationRecord
+from qcfractal.interface.models import ComputeResponse
 
 from edw.qc.specs import get_optimization_specification, create_computation_spec
 from edw.utils import generate_inchi_and_xyz
@@ -36,7 +36,8 @@ class QCFractalWrapper:
     and passing data between different steps of the process."""
 
     def __init__(self, coll_name: str, qc_spec: str, base_class: Type[Collection] = Dataset,
-                 address: str = "localhost:7874", qca_passwd: Optional[str] = os.environ.get("QCAUSR", None)):
+                 address: str = "localhost:7874", qca_passwd: Optional[str] = os.environ.get("QCAUSR", None),
+                 create: bool = False):
         """Open the geometry computation dataset
 
         Args:
@@ -45,15 +46,19 @@ class QCFractalWrapper:
             qc_spec: Name of the QC specification
             coll_name: Name of the collection holding the data
             qca_passwd: Password for the QCFractal server
+            create: Whether creating a new collection is acceptable
         """
 
         self.qc_spec = qc_spec
         self.client = FractalClient(address, username='user', password=qca_passwd, verify=False)
         try:
             self.coll = base_class.from_server(name=coll_name, client=self.client)
-        except KeyError:
-            self.coll = base_class(name=coll_name, client=self.client)
-            self.coll.save()
+        except KeyError as ex:
+            if create:
+                self.coll = base_class(name=coll_name, client=self.client)
+                self.coll.save()
+            else:
+                raise ex
 
 
 class GeometryDataset(QCFractalWrapper):
@@ -431,19 +436,14 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
 
     # Get the entries in each solvent
     solvent_energies = solvation_data.get_energies()
-    solvent_energies = dict((i, g) for i, g in solvent_energies.items() if len(g) == 3)
     logger.info(f'Found {len(vacuum_energies)} calculations with at least one solvent')
-
-    # Get the molecules which pass both
-    complete_inchis = set(vacuum_energies.keys()).intersection(solvent_energies.keys())
-    logger.info(f"{len(complete_inchis)} molecules have completed for both")
 
     # Compute the IP and EA for each molecule in each solvent
     results = []
-    for inchi in complete_inchis:
+    for inchi in vacuum_energies.keys():
         # Get the vacuum and energies in solvents
         vac_eng = vacuum_energies[inchi]
-        all_solv_eng = solvent_energies[inchi]
+        all_solv_eng = solvent_energies.get(inchi)
 
         # Initialize the output record
         mol = Chem.MolFromInchi(inchi)
@@ -461,8 +461,10 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
             data[name] = (p * g_chg_u / f).to("V").magnitude
 
             # Correct for solvent
+            if all_solv_eng is None or label not in all_solv_eng:
+                continue
             for solv, solv_eng in all_solv_eng[label].items():
-                if solv not in all_solv_eng['neutral']:
+                if solv not in all_solv_eng.get('neutral', {}):
                     continue  # We need the solvation energy for neutral and ion
                 solv_neu = all_solv_eng['neutral'][solv] - vac_eng['neutral']
                 solv_chg = solv_eng - vac_eng[label]
