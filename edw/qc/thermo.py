@@ -51,7 +51,7 @@ def compute_frequencies(hessian: np.ndarray, molecule: Molecule,
     eig = np.linalg.eigvals(mass_hessian)
     freq = np.sign(eig) * np.sqrt(np.abs(eig))
     conv = np.sqrt(constants.conversion_factor(f'{units} / amu', 'Hz ** 2'))
-    freq *= conv
+    freq *= conv / np.pi / 2  # Converts from angular to ordinary frequency too
     return freq
 
 
@@ -62,7 +62,7 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
     Args:
         hessian: Hessian matrix
         molecule: Molecule object
-        scaling: How much to scale frequnecies before computing ZPE
+        scaling: How much to scale frequencies before computing ZPE
         units: Units for the Hessian matrix
     Returns:
         (float) Energy for the system in Hartree
@@ -71,7 +71,6 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
     # Get the characteristic temperatures of all vibrations
     freqs = compute_frequencies(hessian, molecule, units)
     freqs = constants.ureg.Quantity(freqs, 'Hz')
-    wavenumbers = (freqs / c / 2 / np.pi).to("cm^-1")
 
     # Scale them
     freqs *= scaling
@@ -79,15 +78,20 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
     # Drop the negative frequencies
     neg_freqs = freqs[freqs < 0]
     if len(neg_freqs) > 0:
-        neg_freqs = constants.ureg.Quantity(neg_freqs, 'Hz')
         wavenumbers = neg_freqs / c
-        output = ' '.join(f'{x: .2f}' for x in wavenumbers.to("1/cm").magnitude)
-        logger.warning(f'{molecule.name} has {len(neg_freqs)} negative components: [{output}] cm^-1')
+
+        # Remove those with a wavenumber less than 80 cm^-1 (basically zero)
+        wavenumbers = wavenumbers[wavenumbers.to("1/cm").magnitude < -80]
+        if len(wavenumbers) > 0:
+            output = ' '.join(f'{x:.2f}' for x in wavenumbers.to("1/cm").magnitude)
+            logger.warning(f'{molecule.name} has {len(neg_freqs)} negative components. Largest: [{output}] cm^-1')
 
     #  Convert the frequencies to characteristic temps
     freqs = constants.ureg.Quantity(freqs, 'Hz')
     temps = (h * freqs / kb)
-    print(temps)
+
+    # Filter out temperatures less than 300 K (using this as a threshold for negative modes
+    temps = temps[np.array(temps.to("K")) > 300.]
 
     # Compute the ZPE
     zpe = r * temps.sum() / 2

@@ -15,6 +15,7 @@ from qcfractal.interface.collections.collection import Collection
 from qcfractal.interface.models import ComputeResponse
 
 from edw.qc.specs import get_optimization_specification, create_computation_spec
+from edw.qc.thermo import compute_zpe
 from edw.utils import generate_inchi_and_xyz
 
 logger = logging.getLogger(__name__)
@@ -275,14 +276,8 @@ class GeometryDataset(QCFractalWrapper):
         return output
 
 
-class SolvationEnergyDataset(QCFractalWrapper):
-    """Perform the solvation energy calculations
-
-    Each instance of this dataset should only be used to store geometries from
-    a single type of QC method. Keeping the type of calculation consistent simplifies
-    the identifiers to needing only the molecular identifier and the charge state.
-    The provenance of the geometry is, effectively, encoded in the collection name.
-    """
+class SinglePointDataset(QCFractalWrapper):
+    """Base dataset for calculations on a single molecular geometry"""
 
     coll: ClassVar[Dataset]
 
@@ -296,7 +291,6 @@ class SolvationEnergyDataset(QCFractalWrapper):
         """
         super().__init__(coll_name, qc_spec, base_class=Dataset, **kwargs)
         self.coll.set_default_program(code)
-        self.coll.set_default_units('hartree')
         self.coll.save()
 
     def add_molecule(self, mol: Molecule, inchi: str, save: bool = True, **attributes) -> bool:
@@ -353,8 +347,84 @@ class SolvationEnergyDataset(QCFractalWrapper):
         self.coll.save()
         return n_added
 
+    def get_geometries(self, records: Optional[pd.Series] = None)\
+            -> Dict[str, Dict[str, Molecule]]:
+        """Get all completed geometries
+
+        Args:
+            records: Series of records for which to retrieve molecules.
+                If not provided, will get all complete records
+        Returns:
+            The geometries in different charge states for each molecule
+        """
+
+        # Get the records
+        if records is None:
+            records = self.get_complete_records()
+
+        # Get the molecules
+        mol_ids = records.map(lambda x: x.molecule).tolist()
+        mols: List[Molecule] = []
+        for i in range(0, len(mol_ids), 1000):  # Query by 1000s
+            mols.extend(self.client.query_molecules(mol_ids[i:i+1000]))
+        mol_lookup = dict((m.id, m) for m in mols)
+
+        # Get all of the geometries
+        output = {}
+        for name, record in records.items():
+            inchi, state = name.split("_")
+            if inchi not in output:
+                output[inchi] = {}
+            mol = mol_lookup[record.molecule]
+            assert record.molecule == mol.id
+            output[inchi][state] = mol
+        return output
+
+    def get_complete_records(self) -> pd.Series:
+        """Get all complete geometries
+
+        Returns:
+            All of the complete records
+        """
+
+        # Get the specification
+        methods = self.coll.list_records()
+        assert len(methods) == 1, 'We should have exactly one method per dataset'
+        method = methods.iloc[0]['method']
+
+        # Get the records
+        records = self.coll.get_records(method=method).iloc[:, 0]
+        logger.info(f'Pulled {len(records)} records for {self.coll.name}')
+
+        # Get only those which have completed
+        records = records[~records.isnull()]
+        logger.info(f'Found {len(records)} completed calculations')
+        return records
+
+
+class SolvationEnergyDataset(SinglePointDataset):
+    """Perform the solvation energy calculations
+
+    Each instance of this dataset should only be used to store geometries from
+    a single type of QC method. Keeping the type of calculation consistent simplifies
+    the identifiers to needing only the molecular identifier and the charge state.
+    The provenance of the geometry is, effectively, encoded in the collection name.
+    """
+
+    def __init__(self, coll_name: str, code: str, qc_spec: str, **kwargs):
+        """
+        Args:
+            coll_name: Collection name.
+            code: Which code to use
+            qc_spec: Name of the specification
+            **kwargs
+        """
+        super().__init__(coll_name, code, qc_spec, **kwargs)
+        self.coll.set_default_units('hartree')
+        self.coll.save()
+
     def start_computation(self, solvents: List[str], tag: Optional[str] = None) -> int:
-        """Define the quantum chemistry specification for this dataset
+        """Submit calculations for every molecule in a certain list of solvents
 
         Args:
             solvents: Names of the solvents
@@ -418,13 +488,100 @@ class SolvationEnergyDataset(QCFractalWrapper):
         return output
 
 
+class HessianDataset(SinglePointDataset):
+    """Compute Hessians for a certain dataset"""
+
+    def __init__(self, coll_name: str, code: str, qc_spec: str, **kwargs):
+        """
+        Args:
+            coll_name: Collection name.
+            code: Which code to use
+            qc_spec: Name of the specification
+            **kwargs
+        """
+        super().__init__(coll_name, code, qc_spec, **kwargs)
+        self.coll.set_default_units('hartree / angstrom ** 2')
+        self.coll.set_default_driver('hessian')
+        self.coll.save()
+
+    def start_computation(self, tag: Optional[str] = None) -> int:
+        """Begin Hessian computations for a certain list of solvents
+
+        Args:
+            tag: Tag to use for the computations
+        Returns:
+            Number of calculations started
+        """
+
+        # Create a tag, if need be
+        if tag is None:
+            tag = f'edw_{self.qc_spec}'
+
+        # Query to get the latest molecules
+        self.coll.get_values()
+
+        # Start computations for each solvent
+        spec = create_computation_spec(self.qc_spec)
+
+        # Deal with the keywords
+        alias = f'{self.qc_spec}'
+        try:
+            self.coll.get_keywords(alias=alias, program=spec["program"])
+        except KeyError:
+            self.coll.add_keywords(alias=alias, program=spec["program"], keyword=spec["keywords"])
+            self.coll.save()
+            logger.info(f'Added keywords {alias} to the collection')
+
+        # Start the computation
+        results: ComputeResponse = self.coll.compute(
+            method=spec["method"], basis=spec.get("basis", None), keywords=alias, tag=tag
+        )
+        n_submitted = len(results.submitted)
+
+        return n_submitted
+
+    def get_zpe(self, scale_factor: float = 1.0) -> Dict[str, Dict[str, float]]:
+        """Get the zero point energy contributions to all molecules
+
+        Args:
+            scale_factor: Frequency scaling factor
+        Returns:
+            ZPE for each molecule
+        """
+
+        # Get all of the hessians and molecules
+        records = self.get_complete_records()
+        mols = self.get_geometries(records)
+
+        # Iterate over records
+        output = {}
+        for label, record in records.items():
+            # Get the name of the solvent
+            inchi, state = label.rsplit("_", 1)
+
+            # Get the molecule
+            mol = mols[inchi][state]
+
+            # Compute the ZPE
+            zpe = compute_zpe(record.return_result, mol, scaling=scale_factor)
+
+            # Store it
+            if inchi not in output:
+                output[inchi] = {}
+            output[inchi][state] = zpe
+
+        return output
+
+
 def compute_ionization_potentials(geometry_data: GeometryDataset,
-                                  solvation_data: SolvationEnergyDataset) -> pd.DataFrame:
+                                  solvation_data: SolvationEnergyDataset,
+                                  hessian_data: Optional[HessianDataset] = None) -> pd.DataFrame:
     """Compute the ionization potential in different solvents
 
     Args:
         geometry_data: Geometry dataset
         solvation_data: Solvation energy computation dataset
+        hessian_data: Hessian dataset, if desired
     Returns:
         Dataframe of all of the computation information
     """
@@ -433,6 +590,15 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
     vacuum_energies = geometry_data.get_energies()
     vacuum_energies = dict((i, g) for i, g in vacuum_energies.items() if len(g) == 3)
     logger.info(f'Found {len(vacuum_energies)} calculations with all the geometries')
+
+    # Get the ZPEs
+    zpes = None
+    if hessian_data is not None:
+        zpes = hessian_data.get_zpe()
+        logging.info(f'Retrieved ZPEs for {len(zpes)} molecules')
+
+        # Downselect for only the molecules with ZPEs for all three geometries
+        vacuum_energies = dict((i, g) for i, g in vacuum_energies.items() if len(zpes.get(i, {})) == 3)
 
     # Get the entries in each solvent
     solvent_energies = solvation_data.get_energies()
@@ -445,6 +611,11 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
         vac_eng = vacuum_energies[inchi]
         all_solv_eng = solvent_energies.get(inchi)
 
+        # Compute the energy of the neutral
+        neutral_vac_eng = vac_eng['neutral']
+        if zpes is not None:
+            neutral_vac_eng += zpes[inchi]['neutral']
+
         # Initialize the output record
         mol = Chem.MolFromInchi(inchi)
         data = {'inchi': inchi, 'smiles': Chem.MolToSmiles(mol),
@@ -455,8 +626,13 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
             # Prefactor
             p = -1 if name == "EA" else 1
 
+            # Compute the energy of the charged
+            charged_vac_eng = vac_eng[label]
+            if zpes is not None:
+                charged_vac_eng += zpes[inchi][label]
+
             # Compute the potential in gas
-            g_chg = vac_eng[label] - vac_eng['neutral']
+            g_chg = charged_vac_eng - neutral_vac_eng
             g_chg_u = constants.ureg.Quantity(g_chg * constants.hartree2kcalmol, 'kcal/mol')
             data[name] = (p * g_chg_u / f).to("V").magnitude
 
