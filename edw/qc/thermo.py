@@ -56,7 +56,8 @@ def compute_frequencies(hessian: np.ndarray, molecule: Molecule,
 
 
 def compute_zpe(hessian: np.ndarray, molecule: Molecule,
-                scaling: float = 1, units: str = 'hartree / bohr ** 2') -> float:
+                scaling: float = 1, units: str = 'hartree / bohr ** 2',
+                verbose: bool = False) -> float:
     """Compute the characteristic temperature of vibrational frequencies for a molecule
 
     Args:
@@ -64,6 +65,7 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
         molecule: Molecule object
         scaling: How much to scale frequencies before computing ZPE
         units: Units for the Hessian matrix
+        verbose: Whether to display warnings about negative frequencies
     Returns:
         (float) Energy for the system in Hartree
     """
@@ -84,7 +86,8 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
         wavenumbers = wavenumbers[wavenumbers.to("1/cm").magnitude < -80]
         if len(wavenumbers) > 0:
             output = ' '.join(f'{x:.2f}' for x in wavenumbers.to("1/cm").magnitude)
-            logger.warning(f'{molecule.name} has {len(neg_freqs)} negative components. Largest: [{output}] cm^-1')
+            if verbose:
+                logger.warning(f'{molecule.name} has {len(neg_freqs)} negative components. Largest: [{output}] cm^-1')
 
     #  Convert the frequencies to characteristic temps
     freqs = constants.ureg.Quantity(freqs, 'Hz')

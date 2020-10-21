@@ -275,6 +275,26 @@ class GeometryDataset(QCFractalWrapper):
             output[inchi][state] = record.get_final_energy()
         return output
 
+    def get_wall_times(self) -> Dict[str, Dict[str, float]]:
+        """Compute the walltimes needed to compute geometries
+
+        Returns:
+            Two-layer dictionary of inchi->charge_label->walltime
+        """
+
+        # Get the records
+        records = self.get_complete_records()
+
+        # Compile all of the wall times
+        all_walltimes = {}
+        for name, record in records.items():
+            inchi, label = name.split("_", 2)
+            if inchi not in all_walltimes:
+                all_walltimes[inchi] = {}
+            all_walltimes[inchi][label] = record.provenance.wall_time
+
+        return all_walltimes
+
 
 class SinglePointDataset(QCFractalWrapper):
     """Base dataset for calculations on a single molecular geometry"""
@@ -400,6 +420,25 @@ class SinglePointDataset(QCFractalWrapper):
         records = records[~records.isnull()]
         logger.info(f'Found {len(records)} completed calculations')
         return records
+
+    def get_wall_times(self) -> Dict[str, Dict[str, float]]:
+        """Compute the total walltime expended on each molecule
+
+        Returns:
+            Two-level dictionary of InChI->charge state->walltime (s)
+        """
+        # Get all of the complete records
+        records = self.get_complete_records()
+
+        # Compile all of the walltimes
+        walltimes = {}
+        for name, record in records.items():
+            inchi, label = name.split("_", 1)
+            if inchi not in walltimes:
+                walltimes[inchi] = {}
+            walltimes[inchi][label] = record.provenance.wall_time
+
+        return walltimes
 
 
 class SolvationEnergyDataset(SinglePointDataset):
@@ -583,13 +622,17 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
         solvation_data: Solvation energy computation dataset
         hessian_data: Hessian dataset, if desired
     Returns:
-        Dataframe of all of the computation information
+        Dataframe of all IPs with total runtimes for each molecule
     """
 
     # Get the energies in vacuum
     vacuum_energies = geometry_data.get_energies()
-    vacuum_energies = dict((i, g) for i, g in vacuum_energies.items() if len(g) == 3)
+    vacuum_energies = dict((i, g) for i, g in vacuum_energies.items() if 'neutral' in g)
     logger.info(f'Found {len(vacuum_energies)} calculations with all the geometries')
+
+    # Get the runtimes for the geometry
+    wall_times = geometry_data.get_wall_times()
+    geoms = geometry_data.get_geometries()
 
     # Get the ZPEs
     zpes = None
@@ -597,8 +640,15 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
         zpes = hessian_data.get_zpe()
         logging.info(f'Retrieved ZPEs for {len(zpes)} molecules')
 
-        # Downselect for only the molecules with ZPEs for all three geometries
-        vacuum_energies = dict((i, g) for i, g in vacuum_energies.items() if len(zpes.get(i, {})) == 3)
+        # Downselect for only the molecules with ZPEs for at least the neutral
+        vacuum_energies = dict((i, g) for i, g in vacuum_energies.items()
+                               if 'neutral' in zpes.get(i, {}))
+
+        # Add hessians to the runtimes
+        hess_runtime = hessian_data.get_wall_times()
+        for inchi, inchi_wall_times in wall_times.items():
+            for state, wt in hess_runtime.get(inchi, {}).items():
+                wall_times[inchi][state] += wt
 
     # Get the entries in each solvent
     solvent_energies = solvation_data.get_energies()
@@ -619,10 +669,16 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
         # Initialize the output record
         mol = Chem.MolFromInchi(inchi)
         data = {'inchi': inchi, 'smiles': Chem.MolToSmiles(mol),
-                'inchi_key': Chem.MolToInchiKey(mol)}
+                'inchi_key': Chem.MolToInchiKey(mol),
+                'xyz_neutral': geoms[inchi]['neutral'].to_string('xyz'),
+                'wall_time_neutral': wall_times[inchi]['neutral']}
 
         # Compute the EA and IP in each solvent we have
         for label, name in zip(['reduced', 'oxidized'], ['EA', 'IP']):
+            # Check if we have a geometry for this charge state
+            if label not in vac_eng or (hessian_data is not None and label not in zpes.get(inchi, {})):
+                continue
+
             # Prefactor
             p = -1 if name == "EA" else 1
 
@@ -636,7 +692,13 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
             g_chg_u = constants.ureg.Quantity(g_chg * constants.hartree2kcalmol, 'kcal/mol')
             data[name] = (p * g_chg_u / f).to("V").magnitude
 
-            # Correct for solvent
+            # Store the walltime
+            data[f'wall_time_{name}'] = wall_times[inchi][label] + wall_times[inchi]['neutral']
+
+            # Store the geometry
+            data[f'xyz_{label}'] = geoms[inchi][label].to_string('xyz')
+
+            # Correct for solventIP
             if all_solv_eng is None or label not in all_solv_eng:
                 continue
             for solv, solv_eng in all_solv_eng[label].items():
