@@ -2,25 +2,42 @@ name: edw
 channels:
   - defaults
   - conda-forge
-  - rdkit
-  - openbabel
+  - psi4/label/dev
 dependencies:
-  - python==3.7.4
-  - pymatgen==2019.11.11
-  - custodian==2019.9.23
-  - scikit-learn==0.21.3
-  - matplotlib==3.1.1
-  - rdkit==2019.03.4.0
-  - openbabel==2.4.1
-  - qcengine
-  - mongodb==4.0.3
-  - pymongo==3.9.0
-  - qcportal  # Not specifying a version until NWChem support is complete
+# Core dependencies for Colmena
+  - python==3.7.*
+  - scikit-learn==0.22.*
+  - redis==5.0.*
+  - redis-py==3.4.*
+  - sphinx
+  - sphinx_rtd_theme
   - jupyterlab
-  - psutil
   - pytest
+  - flake8
   - pip
+
+# Dependencies from the molecular design app
+  - matplotlib>=3
+  - openbabel==3.0.*
+  - geometric==0.9.*
+  - qcengine==0.17.*
+  - rdkit==2019.09.3
+  - tensorflow==2.1.*
+  - qcfractal==0.14.*
+  - psi4==1.4*
+  - py-cpuinfo<6
+  - msgpack-python==1.*
+  - sqlalchemy
+  - xtb-python
+  - psutil
+  - git-lfs
+  - tqdm
+
+# Pip packages for all of them
   - pip:
-    - parsl==0.9.0
-    - cclib==1.6.2
-    - -e .
+      - -e .
+      - parsl[monitoring]>=1.*
+      - pydantic
+      - python-git-info
+      - gym
+      - git+https://github.com/exalearn/covid-drug-design.git
