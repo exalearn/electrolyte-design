@@ -25,6 +25,7 @@ jobs:
         activate-environment: edw
     - name: Install dependencies
       run: |
+        souce activate edw
         which python
         which conda
         conda info
