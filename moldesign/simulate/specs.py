@@ -23,7 +23,6 @@ _xtb_fine_kwgs = {
 }
 
 # Optimization specs
-
 _opt_specs = {
     'small_basis': {
         'name': 'small_basis',

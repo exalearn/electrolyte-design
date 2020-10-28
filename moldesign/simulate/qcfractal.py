@@ -1,4 +1,5 @@
-"""Functions and modules related to high-throughput computational chemistry"""
+"""Modules and functions for computing molecular properties with QCFractal"""
+
 import os
 import logging
 from typing import Optional, Dict, Type, ClassVar, List
@@ -14,9 +15,9 @@ from qcfractal.interface.collections import OptimizationDataset, Dataset
 from qcfractal.interface.collections.collection import Collection
 from qcfractal.interface.models import ComputeResponse
 
-from edw.qc.specs import get_optimization_specification, create_computation_spec
-from edw.qc.thermo import compute_zpe
-from edw.utils import generate_inchi_and_xyz
+from .specs import get_optimization_specification, create_computation_spec
+from .thermo import compute_zpe
+from .functions import generate_inchi_and_xyz
 
 logger = logging.getLogger(__name__)
 
