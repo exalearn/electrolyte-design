@@ -19,9 +19,11 @@ jobs:
       uses: conda-incubator/setup-miniconda@v1.7.0
       with:
         environment-file: environment.yml
-        activate-environment: edw
     - name: Install dependencies
-      run: pip install flake8 pytest
+      run: |
+        conda activate edw
+        which python
+        pip install flake8 pytest
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names
