@@ -1,7 +1,8 @@
 """Workflow-friendly functions for performing quantum chemistry
 
 Each function is designed to have inputs and outputs
-that are, ideally,
+that are serializable and, ideally, possible to use
+in languages besides Python
 """
 
 from typing import Dict, Optional, Union
@@ -64,6 +65,7 @@ def generate_inchi_and_xyz(smiles: str) -> Tuple[str, str]:
         xyz += f"{s} {c[0]} {c[1]} {c[2]}\n"
 
     return inchi, xyz
+
 
 def compute_atomization_energy(smiles: str, qc_config: QCInputSpecification,
                                reference_energies: Dict[str, float],
@@ -148,7 +150,7 @@ def relax_structure(smiles: str,
         (OptimizationResult): Full output from the calculation
     """
     # Generate 3D coordinates by minimizing MMFF forcefield
-    xyz = generate_atomic_coordinates(smiles)
+    _, xyz = generate_inchi_and_xyz(smiles)
     mol = Molecule.from_data(xyz, dtype='xyz')
 
     # Generate connectivity, if needed
