@@ -1,6 +1,6 @@
 """Submit new calculations"""
 
-from edw.qc import GeometryDataset, SolvationEnergyDataset
+from moldesign.simulate.qcfractal import GeometryDataset, SolvationEnergyDataset, HessianDataset
 
 # List the solvents to use
 _xtb_solvs = ['water', 'dmso', 'acetone', 'acetonitrile']
@@ -10,6 +10,10 @@ _nwc_solvs = ['water', 'dmse', 'acetone', 'ethanol', 'acetntrl']
 xtb_geom = GeometryDataset('Electrolyte Geometry XTB', 'xtb')
 sbn_geom = GeometryDataset('Electrolyte Geometry NWChem', 'small_basis')
 nbn_geom = GeometryDataset('Electrolyte Geometry NWChem, 6-31G(2df,p)', 'normal_basis')
+
+sbn_hess = HessianDataset('Electrolyte Hessian', 'nwchem', 'small_basis')
+nbn_hess = HessianDataset('Electrolyte Hessian, 6-31G(2df,p)', 'nwchem', 'normal_basis')
+
 xtb_solv = SolvationEnergyDataset('EDW XTB Solvation Energy', 'xtb', 'xtb')
 sbn_solv = SolvationEnergyDataset('EDW NWChem Solvation Energy', 'nwchem', 'small_basis')
 
@@ -17,7 +21,13 @@ sbn_solv = SolvationEnergyDataset('EDW NWChem Solvation Energy', 'nwchem', 'smal
 for geom in [xtb_geom, sbn_geom, nbn_geom]:
     n_started = geom.start_charged_geometries()
     print(f'Started {n_started} charged geometries for {geom.coll.name}')
-exit()
+
+# Begin Hessian calculations for the NWChem runs
+for hess, geom in [(sbn_hess, sbn_geom), (nbn_hess, nbn_geom)]:
+    was_added = hess.add_geometries(geom)
+    print(f'Added {was_added} geometries from {geom.coll.name} to {hess.coll.name}')
+    num_started = hess.start_computation()
+    print(f'Started {num_started} computations for {hess.coll.name}')
 
 # Pass geometries from one level forward to the next
 for start_geom, end_geom in [(xtb_geom, sbn_geom), (sbn_geom, nbn_geom)]:
@@ -27,10 +37,11 @@ for start_geom, end_geom in [(xtb_geom, sbn_geom), (sbn_geom, nbn_geom)]:
             was_added = end_geom.add_molecule_from_geometry(geoms['neutral'], inchi=inchi, save=False)
             if was_added:
                 n_added += 1
-        end_geom.coll.save()
+    end_geom.coll.save()
     print(f'Added {n_added} geometries from {start_geom.coll.name} to {end_geom.coll.name}')
     n_started = end_geom.start_compute()
     print(f'Started {n_started} neutral molecule relaxations for {end_geom.coll.name}')
+exit()
 
 # Start solvent calculations
 n_added = xtb_solv.add_geometries(xtb_geom)
@@ -44,4 +55,3 @@ print(f'Added {n_added} new molecules to NWChem solvent computer')
 
 n_started = sbn_solv.start_computation(_nwc_solvs)
 print(f'Started {n_started} new solvent NWChem computations')
-
