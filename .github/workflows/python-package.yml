@@ -21,12 +21,12 @@ jobs:
     - name: Setup Miniconda
       uses: conda-incubator/setup-miniconda@v1.7.0
       with:
-        activate-environment: edw
-        auto-activate-base: false
         environment-file: environment.yml
     - name: Install dependencies
       run: |
         which python
+        which conda
+        conda list
         pip install flake8 pytest
     - name: Lint with flake8
       run: |
