@@ -23,12 +23,16 @@ jobs:
       with:
         environment-file: environment.yml
         activate-environment: edw
-    - name: Install dependencies
+    - name: Initialize shell 
+      run: conda init
+    - name: Activate environment
       run: |
-        which python
         which conda
         conda activate edw
         conda info
+    - name: Install dependencies
+      run: |
+        which python
         pip install flake8 pytest
     - name: Lint with flake8
       run: |
