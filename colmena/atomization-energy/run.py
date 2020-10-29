@@ -11,8 +11,9 @@ from random import sample, choice, shuffle, random
 from datetime import datetime
 from functools import partial, update_wrapper
 from queue import Queue, Empty
-from threading import Thread, Event, Lock
-from typing import List, Dict
+from threading import Event, Lock
+from typing import List, Dict, Tuple
+from multiprocessing import Process
 
 import parsl
 import tensorflow as tf
@@ -34,7 +35,7 @@ from colmena.redis.queue import ClientQueues, make_queue_pairs
 compute_config = {'nnodes': 1, 'cores_per_rank': 2}
 
 
-class Thinker(Thread):
+class Thinker(Process):
     """ML-enhanced optimization loop for molecular design"""
 
     def __init__(self, queues: ClientQueues,
@@ -68,12 +69,17 @@ class Thinker(Thread):
 
         # Generic stuff: logging, communication to Method Server
         self.queues = queues
-        self.logger = logging.getLogger(self.__class__.__name__)
         self.output_dir = output_dir
+
+        self.logger = logging.getLogger(self.__class__.__name__)
+        hnd = logging.FileHandler(os.path.join(output_dir, 'thinker.log'))
+        hnd.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        self.logger.addHandler(hnd)
 
         # The ML components
         self.moldqn = initial_moldqn
-        self.mpnns = initial_mpnns
+        init_mols = list(initial_training_set.keys())
+        self.mpnns: List[Tuple[tf.keras.Model, List[str]]] = list((x, init_mols) for x in initial_mpnns)
         
         # Active learning settings
         self.random_frac = random_frac
@@ -135,6 +141,16 @@ class Thinker(Thread):
             # Get the task and store its content
             result = self.queues.get_result(topic='simulator')
             self.logger.info('QC task completed')
+
+            # Get a new one from the priority queue and submit it
+            smiles, task_info = self._task_queue.get()
+            if smiles in self.search_space:
+                self.search_space.remove(smiles)
+            self.logger.info(f'Running {smiles} from batch {task_info["batch"]}')
+            self.queues.send_inputs(smiles, topic='simulator', method='compute_atomization_energy', keep_inputs=True,
+                                    task_info=task_info)
+
+            # Store the content from the previous run
             if result.success:
                 # Store the result in the database
                 self.database[result.args[0]] = result.value[0]  # First arg is the energy
@@ -147,14 +163,6 @@ class Thinker(Thread):
             else:
                 logging.warning('Calculation failed! See simulation outputs and Parsl log file')
             self._write_result(result, 'simulation_records.jsonld', keep_outputs=True)
-
-            # Get a new one from the priority queue and submit it
-            smiles, task_info = self._task_queue.get()
-            if smiles in self.search_space:
-                self.search_space.remove(smiles)
-            self.logger.info(f'Running {smiles} from batch {task_info["batch"]}')
-            self.queues.send_inputs(smiles, topic='simulator', method='compute_atomization_energy', keep_inputs=True,
-                                    task_info=task_info)
 
         # Waiting for the still-ongoing tasks to complete
         self.logger.info('Collecting the last molecules')
@@ -188,8 +196,9 @@ class Thinker(Thread):
         for _ in range(self.n_parallel_updating):
             ind = ready_to_retrain.popleft()
             mpnn = self.mpnns[ind]
-            self.queues.send_inputs(MPNNMessage(mpnn), self.database, 4,
-                                    method='update_mpnn', topic='update', task_info={'index': ind})
+            self.queues.send_inputs(MPNNMessage(mpnn[0]), self.database, 4,
+                                    method='update_mpnn', topic='update',
+                                    task_info={'index': ind, 'training_molecules': list(self.database.keys())})
             self.logger.info(f'Submitted model {ind} to be updated')
 
         # Continually wait for new models to come back
@@ -200,15 +209,17 @@ class Thinker(Thread):
             # Submit another model to be updated
             ind = ready_to_retrain.popleft()
             mpnn = self.mpnns[ind]
-            self.queues.send_inputs(MPNNMessage(mpnn), self.database, 4,
-                                    method='update_mpnn', topic='update', task_info={'index': ind})
+            self.queues.send_inputs(MPNNMessage(mpnn[0]), self.database, 4,
+                                    method='update_mpnn', topic='update',
+                                    task_info={'index': ind, 'training_molecules': list(self.database.keys())})
             self.logger.info(f'Submitted model {ind} to be updated')
 
             # Update the weights
             complted_ind = result.task_info['index']
             new_weights, _ = result.value
             with self._update_lock:
-                self.mpnns[complted_ind].set_weights(new_weights)
+                self.mpnns[complted_ind][0].set_weights(new_weights)
+                self.mpnns[complted_ind][1] = result.task_info['training_molecules']
             self.logger.info(f'Updated weights for model {complted_ind}')
 
             # Mark the model as ready to be updated again
@@ -247,10 +258,15 @@ class Thinker(Thread):
 
             # Assign them scores
             with self._update_lock:
-                self.queues.send_inputs([MPNNMessage(m) for m in self.mpnns],
+                self.queues.send_inputs([MPNNMessage(m) for m, _ in self.mpnns],
                                         self.search_space, method='evaluate_mpnn', topic='generate')
+
+                # Capture the training set of models used in this inference run
+                training_sets = [s for _, s in self.mpnns]
+
             result = self.queues.get_result(topic='generate')
             scores = result.value
+            result.task_info['training_sets'] = training_sets  # Record the training sets
             self._write_result(result, 'screen_records.jsonld', keep_inputs=False, keep_outputs=False)
             self.logger.info(f'Assigned scores to all {len(scores)} molecules')
 
