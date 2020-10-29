@@ -25,9 +25,9 @@ jobs:
         activate-environment: edw
     - name: Install dependencies
       run: |
-        source activate edw
         which python
         which conda
+        conda activate edw
         conda info
         pip install flake8 pytest
     - name: Lint with flake8
