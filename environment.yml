@@ -40,4 +40,4 @@ dependencies:
       - pydantic
       - python-git-info
       - gym
-      - git+https://github.com/exalearn/covid-drug-design.git
+      - git+https://github.com/exalearn/colmena.git
