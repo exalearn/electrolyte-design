@@ -4,7 +4,7 @@
 name: Python package
 defaults:
   run:
-    shell: bash
+    shell: bash -l {0}
 
 on:
   push:
@@ -23,15 +23,6 @@ jobs:
       with:
         environment-file: environment.yml
         activate-environment: edw
-    - name: Initialize shell 
-      run: |
-        conda init
-        exec bash
-    - name: Activate environment
-      run: |
-        which conda
-        conda activate edw
-        conda info
     - name: Install dependencies
       run: |
         which python
