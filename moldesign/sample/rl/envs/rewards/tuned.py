@@ -55,7 +55,7 @@ class LogisticCombination(RewardFunction):
 
         # Normalize them
         mw_score = 1.0 / (
-            (1 + np.exp((self.mw_range[0] - mw) /self.mw_tol)) *
+            (1 + np.exp((self.mw_range[0] - mw) / self.mw_tol)) *
             (1 + np.exp((mw - self.mw_range[1]) / self.mw_tol))
         )
         pic50_score = 1.0 / (1 + np.exp((8 - pic50) / self.pic50_tol))

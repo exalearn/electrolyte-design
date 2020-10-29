@@ -29,4 +29,3 @@ def test_serialization():
     res = pkl.dumps(moldqn)
     moldqn_2 = pkl.loads(res)
     assert len(moldqn_2.optimizer.get_weights()) == 0
-

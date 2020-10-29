@@ -119,4 +119,3 @@ def create_computation_spec(spec_name: str, solvent: Optional[str] = None) -> di
     output_spec["keywords"] = kwds
 
     return output_spec
-

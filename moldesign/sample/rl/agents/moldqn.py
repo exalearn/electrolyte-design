@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 from collections import deque
 import tensorflow as tf
-from tensorflow.keras.models import Model, model_from_config
-from tensorflow.keras.layers import Dense, Input, Lambda, Subtract, Concatenate
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, Input, Lambda, Subtract
 from tensorflow.keras import backend as K
 
 from moldesign.sample.rl.agents.preprocessing import MorganFingerprints
@@ -99,7 +99,7 @@ class DQNFinalState:
                                    name='batch_action')
         reward_input = Input(batch_shape=(self.batch_size, 1), name='rewards')
         done_input = Input(batch_shape=(self.batch_size, 1), name='done')
-        next_actions = Input(batch_shape=(None, fingerprint_size), name=f'next_actions')
+        next_actions = Input(batch_shape=(None, fingerprint_size), name='next_actions')
         next_actions_id = Input(batch_shape=(None,), name='next_action_batch_id', dtype=tf.int32)
 
         # Squeeze the train action and reward input
@@ -241,7 +241,7 @@ class DQNFinalState:
 
     def load_model(self, path):
         """Load the weights of the model
-        
+
         Args:
             path (str): Path to a file holding the weights
         """

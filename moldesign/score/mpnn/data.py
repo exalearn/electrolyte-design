@@ -144,7 +144,7 @@ def parse_records(example_proto, target_name: str = 'pIC50'):
 
 def prepare_for_batching(dataset):
     """Make the variable length arrays into RaggedArrays.
-    
+
     Allows them to be merged together in batches"""
     for c in ['atom', 'bond', 'connectivity']:
         expanded = tf.expand_dims(dataset[c].values, axis=0, name=f'expand_{c}')
@@ -174,7 +174,7 @@ def combine_graphs(batch):
 
 def make_training_tuple(batch, target_name='pIC50'):
     """Get the output tuple.
-    
+
     Makes a tuple dataset with the inputs as the first element
     and the output energy as the second element
     """
@@ -189,11 +189,11 @@ def make_training_tuple(batch, target_name='pIC50'):
     return inputs, output
 
 
-def make_data_loader(file_path, batch_size=32, shuffle_buffer=None, 
+def make_data_loader(file_path, batch_size=32, shuffle_buffer=None,
                      n_threads=tf.data.experimental.AUTOTUNE, shard=None,
                      cache: bool = False, output_property: str = 'pIC50') -> tf.data.TFRecordDataset:
     """Make a data loader for tensorflow
-    
+
     Args:
         file_path (str): Path to the training set
         batch_size (int): Number of graphs per training batch
@@ -211,11 +211,11 @@ def make_data_loader(file_path, batch_size=32, shuffle_buffer=None,
     # Save the data in memory if needed
     if cache:
         r = r.cache()
-        
+
     # Shuffle the entries
     if shuffle_buffer is not None:
         r = r.shuffle(shuffle_buffer)
-        
+
     # Shard after shuffling (so that each rank will be able to make unique batches each time)
     if shard is not None:
         r = r.shard(*shard)

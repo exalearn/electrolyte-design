@@ -35,7 +35,7 @@ class AdditiveReward(RewardFunction):
             self._rewards.append(r['reward'])
             self._means.append(r.get('mean', 0))
             self._scales.append(r.get('scale', 1))
-            logger.info(f'Added {self._rewards[-1]} with mean {self._means[-1]: .2e} and scale {self._scales[-1]: .2e}')
+            logger.info(f'Added {self._rewards[-1]}. Mean: {self._means[-1]:.2e}, scale: {self._scales[-1]:.2e}')
 
     def _call(self, graph: nx.Graph) -> float:
         output = 0.

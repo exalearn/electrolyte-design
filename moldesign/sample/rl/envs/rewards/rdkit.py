@@ -14,7 +14,7 @@ _sa_score_path = f"{env_path}/share/RDKit/Contrib/SA_Score/sascorer.py"
 if not os.path.isfile(_sa_score_path):
     raise ValueError('SA_scorer file not found. You must edit the above lines to point to the right place. Sorry!')
 sys.path.append(os.path.dirname(_sa_score_path))
-from sascorer import calculateScore
+from sascorer import calculateScore  # noqa: 402
 
 
 class LogP(RewardFunction):

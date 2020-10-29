@@ -189,4 +189,3 @@ def compute_reference_energy(element: str, qc_config: QCInputSpecification,
     result = compute(input_spec, code, raise_error=True)
 
     return result.return_result
-

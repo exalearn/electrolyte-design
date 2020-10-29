@@ -32,7 +32,7 @@ class MPNNReward(RewardFunction):
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        
+
         # Convert the model to a JSON description and weights
         state['model_weights'] = self.model.get_weights()
         state['model'] = self.model.to_json()

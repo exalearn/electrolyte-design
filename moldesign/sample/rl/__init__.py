@@ -4,7 +4,6 @@ import logging
 from typing import Set, Tuple
 
 from .agents.moldqn import DQNFinalState
-from .envs.rewards import RewardFunction
 from moldesign.utils.conversions import convert_nx_to_smiles
 
 

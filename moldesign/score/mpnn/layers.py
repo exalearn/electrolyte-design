@@ -58,7 +58,7 @@ class MessageBlock(layers.Layer):
         atom_state = original_atom_state + messages
 
         return atom_state, bond_state
-    
+
     def get_config(self):
         config = super().get_config()
         config.update({
@@ -83,7 +83,7 @@ class GraphNetwork(layers.Layer):
     used to represent each atom. We chose this reduction approach under the assumption the energy of a molecule
     can be computed as a sum over atomic energies."""
 
-    def __init__(self, atom_classes, bond_classes, atom_dimension, num_messages, 
+    def __init__(self, atom_classes, bond_classes, atom_dimension, num_messages,
                  output_layer_sizes=None, atomic_contribution: bool = False,
                  attention_mlp_sizes: List[int] = None, n_outputs: int = 1,
                  reduce_function: str = 'sum', **kwargs):
@@ -93,7 +93,7 @@ class GraphNetwork(layers.Layer):
              bond_classes (int): Number of possible types of edges
              atom_dimension (int): Number of features used to represent a node and bond
              num_messages (int): Number of message passing steps to perform
-             output_layer_sizes ([int]): Number of nodes in MLP that reduces dimensionality of atomic/molecular features
+             output_layer_sizes ([int]): Number of nodes in hidden layers of output MLP
              attention_mlp_sizes ([int]): Number of nodes in MLP to map atomic features to attention weights
              n_outputs (int): Number of outputs for the network
              reduce_function (str): Which ``segment_*`` function to use to reduce atomic representations.
@@ -106,7 +106,7 @@ class GraphNetwork(layers.Layer):
         self.message_layers = [MessageBlock(atom_dimension) for _ in range(num_messages)]
         self.atomic_contribution = atomic_contribution
         self.n_outputs = n_outputs
-        
+
         # Make the output MLP
         if output_layer_sizes is None:
             output_layer_sizes = []

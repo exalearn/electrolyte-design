@@ -166,7 +166,7 @@ def theta_xtb_config(ml_workers: int, log_dir: str, xtb_per_node: int = 1,
                     nodes_per_block=xtb_nodes,
                     init_blocks=1,
                     max_blocks=1,
-                    launcher=AprunLauncher(overrides='-d 64 --cc depth'),  # Places worker on the compute node 
+                    launcher=AprunLauncher(overrides='-d 64 --cc depth'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3
 conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env

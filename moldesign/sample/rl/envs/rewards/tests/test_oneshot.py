@@ -21,5 +21,3 @@ def test_pickle(oneshot_model, atom_types, bond_types, target_mols):
     reward2 = pkl.loads(pkl.dumps(reward))
 
     assert isclose(reward(graph), reward2(graph), abs_tol=1e-6)
-
-

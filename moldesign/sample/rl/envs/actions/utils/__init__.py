@@ -37,8 +37,7 @@ from six.moves import range
 from . import rdkit
 
 
-class Result(
-    collections.namedtuple('Result', ['state', 'reward', 'terminated'])):
+class Result(collections.namedtuple('Result', ['state', 'reward', 'terminated'])):
     """A namedtuple defines the result of a step for the molecule class.
 
       The namedtuple contains the following fields:
