@@ -15,7 +15,7 @@ from qcfractal.interface.collections import OptimizationDataset, Dataset
 from qcfractal.interface.collections.collection import Collection
 from qcfractal.interface.models import ComputeResponse
 
-from .specs import get_optimization_specification, create_computation_spec
+from .specs import get_optimization_specification, get_computation_specification
 from .thermo import compute_zpe
 from .functions import generate_inchi_and_xyz
 
@@ -484,7 +484,7 @@ class SolvationEnergyDataset(SinglePointDataset):
         n_submitted = 0
         for solvent in solvents:
             # Generate the specification
-            spec = create_computation_spec(self.qc_spec, solvent)
+            spec = get_computation_specification(self.qc_spec, solvent)
 
             # Deal with the keywords
             alias = f'{self.qc_spec}_{solvent}'
@@ -561,7 +561,7 @@ class HessianDataset(SinglePointDataset):
         self.coll.get_values()
 
         # Start computations for each solvent
-        spec = create_computation_spec(self.qc_spec)
+        spec = get_computation_specification(self.qc_spec)
 
         # Deal with the keywords
         alias = f'{self.qc_spec}'
