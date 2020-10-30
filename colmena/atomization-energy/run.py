@@ -26,6 +26,7 @@ from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, MPNNMessage
 from moldesign.config import theta_xtb_config
 from moldesign.sample.rl import generate_molecules
 from moldesign.simulate.functions import compute_atomization_energy
+from moldesign.simulate.specs import get_computation_specification, lookup_reference_energies, get_qcinput_specification
 from moldesign.utils import get_platform_info
 
 from colmena.method_server import ParslMethodServer
@@ -357,9 +358,8 @@ if __name__ == '__main__':
     parser.add_argument('--initial-agent', help='Path to the pickle file for the MolDQN agent', required=True)
     parser.add_argument('--initial-search-space', help='Path to an initial population of molecules', required=True)
     parser.add_argument('--initial-database', help='Path to the database used to train the MPNN', required=True)
-    parser.add_argument('--reference-energies', help='Path to the reference energies for the QC calculations',
-                        required=True)
-    parser.add_argument('--qc-spec', help='Path to the QC specification', required=True)
+    parser.add_argument('--qc-spec', help='Name of the QC specification', required=True,
+                        choices=['normal_basis', 'xtb', 'small_basis'])
     parser.add_argument("--parallel-guesses", default=1, type=int,
                         help="Number of calculations to maintain in parallel")
     parser.add_argument("--parallel-updating", default=1, type=int,
@@ -387,16 +387,14 @@ if __name__ == '__main__':
         bond_types = json.load(fp)
     with open(args.initial_database) as fp:
         initial_database = json.load(fp)
-    with open(args.reference_energies) as fp:
-        ref_energies = json.load(fp)
     with open(args.initial_search_space) as fp:
         initial_search_space = json.load(fp)
     with open(args.initial_agent, 'rb') as fp:
         agent = pkl.load(fp)
-    with open(args.qc_spec) as fp:
-        qc_spec = json.load(fp)
-    code = qc_spec.pop("program")
-    qc_spec = QCInputSpecification(**qc_spec)
+
+    # Get QC specification
+    qc_spec, code = get_qcinput_specification(args.qcspec)
+    ref_energies = lookup_reference_energies(args.qcspec)
 
     # Make the reward function
     agent.env.reward_fn = MPNNReward(mpnns[0], atom_types, bond_types, maximize=False)
