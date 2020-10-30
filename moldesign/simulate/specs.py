@@ -1,7 +1,8 @@
 """Specifications for different levels of computational chemistry"""
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from copy import deepcopy
 
+from qcelemental.models.procedures import QCInputSpecification
 from qcfractal.interface import FractalClient
 
 # Keywords used by QC codes
@@ -64,6 +65,31 @@ _opt_specs = {
     }
 }
 
+# Reference energies for each configuration
+_reference_energies = {
+    'xtb': {'H': -0.3934827639359724,
+            'He': -1.743126632945867,
+            'Li': -0.18007168657517492,
+            'C': -1.7932963713649235,
+            'N': -2.6058241612788278,
+            'O': -3.767606950375682,
+            'F': -4.619339964237827},
+    'small_basis': {'H': -0.497311388804,
+                    'He': -2.886001303629,
+                    'Li': -7.438943611544,
+                    'C': -37.64269644992,
+                    'N': -54.295462727225,
+                    'O': -74.660293277123,
+                    'F': -99.182166194876},
+    'normal_basis': {'H': -0.500272782422,
+                     'He': -2.9070481031,
+                     'Li': -7.490902306945,
+                     'C': -37.844958497185,
+                     'N': -54.582875607216,
+                     'O': -75.060582294288,
+                     'F': -99.715958130901}
+}
+
 
 def get_optimization_specification(client: FractalClient, name: str) -> dict:
     """Get a specification from a hard-coded list of specifications.
@@ -90,7 +116,7 @@ def get_optimization_specification(client: FractalClient, name: str) -> dict:
     return spec
 
 
-def create_computation_spec(spec_name: str, solvent: Optional[str] = None) -> dict:
+def get_computation_specification(spec_name: str, solvent: Optional[str] = None) -> dict:
     """Create a computational specification ready to use in a
 
     Args:
@@ -119,3 +145,42 @@ def create_computation_spec(spec_name: str, solvent: Optional[str] = None) -> di
     output_spec["keywords"] = kwds
 
     return output_spec
+
+
+def get_qcinput_specification(spec_name: str, solvent: Optional[str] = None) -> Tuple[QCInputSpecification, str]:
+    """Get the computational specification in a QCEngine-ready format
+
+    Args:
+        spec_name: Name of the quantum chemistry specification
+        solvent: Name of the solvent to use
+    Returns:
+          - Input specification
+          - Name of the program
+    """
+
+    # Make the specification
+    spec = get_computation_specification(spec_name, solvent)
+
+    # Reshape it to QCInputSpecification
+    program = spec.pop("program")
+    spec["model"] = {
+        "method": spec.pop("method"),
+    }
+    if "basis" in spec:
+        spec["model"]["basis"] = spec.pop("basis")
+    if "keywords" in spec:
+        spec["keywords"] = spec["keywords"]["values"]
+
+    return QCInputSpecification(**spec), program
+
+
+def lookup_reference_energies(spec_name: str) -> Dict[str, float]:
+    """Get the atomic reference energies for a certain specification
+
+    Args:
+        spec_name: Name of the quantum chemistry specification
+    Returns:
+        Map of element name to reference energy
+    """
+
+    return _reference_energies[spec_name]
