@@ -11,14 +11,12 @@ from random import sample, choice, shuffle, random
 from datetime import datetime
 from functools import partial, update_wrapper
 from queue import Queue, Empty
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from typing import List, Dict, Tuple
-from multiprocessing import Process
+from traceback import TracebackException
 
-import parsl
 import tensorflow as tf
 from pydantic import BaseModel
-from qcelemental.models.procedures import QCInputSpecification
 from moldesign.sample.rl.agents.moldqn import DQNFinalState
 from moldesign.sample.rl.envs.rewards.mpnn import MPNNReward
 from moldesign.score.mpnn.layers import custom_objects
@@ -26,7 +24,7 @@ from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, MPNNMessage
 from moldesign.config import theta_xtb_config
 from moldesign.sample.rl import generate_molecules
 from moldesign.simulate.functions import compute_atomization_energy
-from moldesign.simulate.specs import get_computation_specification, lookup_reference_energies, get_qcinput_specification
+from moldesign.simulate.specs import lookup_reference_energies, get_qcinput_specification
 from moldesign.utils import get_platform_info
 
 from colmena.method_server import ParslMethodServer
@@ -36,7 +34,7 @@ from colmena.redis.queue import ClientQueues, make_queue_pairs
 compute_config = {'nnodes': 1, 'cores_per_rank': 2}
 
 
-class Thinker(Process):
+class Thinker(Thread):
     """ML-enhanced optimization loop for molecular design"""
 
     def __init__(self, queues: ClientQueues,
@@ -80,7 +78,7 @@ class Thinker(Process):
         # The ML components
         self.moldqn = initial_moldqn
         init_mols = list(initial_training_set.keys())
-        self.mpnns: List[Tuple[tf.keras.Model, List[str]]] = list((x, init_mols) for x in initial_mpnns)
+        self.mpnns: List[List[tf.keras.Model, List[str]]] = list([x, init_mols] for x in initial_mpnns)
         
         # Active learning settings
         self.random_frac = random_frac
@@ -162,7 +160,7 @@ class Thinker(Process):
                     self._write_result(result.value[2], 'qcfractal_records.jsonld')
                 result.value = result.value[0]  # Do not store the full results in the database
             else:
-                logging.warning('Calculation failed! See simulation outputs and Parsl log file')
+                self.logger.warning('Calculation failed! See simulation outputs and Parsl log file')
             self._write_result(result, 'simulation_records.jsonld', keep_outputs=True)
 
         # Waiting for the still-ongoing tasks to complete
@@ -180,7 +178,7 @@ class Thinker(Process):
                     self._write_result(result.value[2], 'qcfractal_records.jsonld')
                 result.value = result.value[0]  # Do not store the full results in the database
             else:
-                logging.warning('Calculation failed! See simulation outputs and Parsl log file')
+                self.logger.warning('Calculation failed! See simulation outputs and Parsl log file')
             self._write_result(result, 'simulation_records.jsonld', keep_outputs=True)
 
         self.logger.info('Task consumer has completed')
@@ -246,7 +244,7 @@ class Thinker(Process):
 
             # Use RL to generate new molecules
             with self._update_lock:
-                self.moldqn.env.reward_fn.model = choice(self.mpnns)
+                self.moldqn.env.reward_fn.model = choice(self.mpnns)[0]
                 self.queues.send_inputs(self.moldqn, method='generate_molecules', topic='generate')
             result = self.queues.get_result(topic='generate')
             self._write_result(result, 'generate_records.jsonld', keep_inputs=False, keep_outputs=False)
@@ -267,7 +265,7 @@ class Thinker(Process):
 
             result = self.queues.get_result(topic='generate')
             scores = result.value
-            result.task_info['training_sets'] = training_sets  # Record the training sets
+            result.task_info = {'training_sets': training_sets}  # Record the training sets
             self._write_result(result, 'screen_records.jsonld', keep_inputs=False, keep_outputs=False)
             self.logger.info(f'Assigned scores to all {len(scores)} molecules')
 
@@ -342,7 +340,16 @@ class Thinker(Process):
             finished = next(as_completed(threads))
             self.logger.info('One of the threads has exited')
             self._gen_done.set()
-            finished.result()
+            exc = finished.exception()
+            if exc is None:
+                self.logger.info('Thread completed w/o problems')
+            else:
+                tb = TracebackException.from_exception(exc)
+                self.logger.warning(f'Thread failed: {exc}.\nTraceback: {"".join(tb.format())}')
+            
+            # Cycle through the threads until all exit
+            for t in threads:
+                t.result()
 
 
 if __name__ == '__main__':
@@ -393,8 +400,8 @@ if __name__ == '__main__':
         agent = pkl.load(fp)
 
     # Get QC specification
-    qc_spec, code = get_qcinput_specification(args.qcspec)
-    ref_energies = lookup_reference_energies(args.qcspec)
+    qc_spec, code = get_qcinput_specification(args.qc_spec)
+    ref_energies = lookup_reference_energies(args.qc_spec)
 
     # Make the reward function
     agent.env.reward_fn = MPNNReward(mpnns[0], atom_types, bond_types, maximize=False)
@@ -437,7 +444,6 @@ if __name__ == '__main__':
 
     # Write the configuration
     config = theta_xtb_config(1, os.path.join(out_dir, 'run-info'), xtb_per_node=16, ml_tasks_per_node=2)
-    parsl.load(config)
 
     # Save Parsl configuration
     with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
@@ -471,7 +477,7 @@ if __name__ == '__main__':
     dft_cfg = {'executors': ['qc']}
     doer = ParslMethodServer([(my_generate_molecules, ml_cfg), (my_evaluate_mpnn, ml_cfg),
                               (my_update_mpnn, ml_cfg), (my_compute_atomization, dft_cfg)],
-                             server_queues)
+                             server_queues, config)
 
     # Configure the "thinker" application
     thinker = Thinker(client_queues,
