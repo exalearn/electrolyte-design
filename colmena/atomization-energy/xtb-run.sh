@@ -1,10 +1,16 @@
 #! /bin/bash
 # Script for running the code with the XTB components, useful for debugging/dev work
 
-python run.py --mpnn-directory ./notebooks/xtb \
-    --initial-agent ./notebooks/xtb/moldqn-training/agent.pkl \
-    --initial-search-space ./notebooks/xtb/moldqn-training/best_mols.json \
-    --initial-database ./notebooks/xtb/initial_database.json \
-    --reference-energies ./notebooks/xtb/ref_energies.json \
-    --qc-spec ./notebooks/xtb/qc_config.json \
-    $@
+# Define the version of models to use
+moldqn_dir=../../ai-components/moldqn/xtb-atomization-v0/
+mpnn_dir=../../ai-components/mpnn/xtb-atomization-v0/
+
+
+models=`find $mpnn_dir -name best_model.h5 | sort | head -n 4`
+
+python run.py --mpnn-config-directory $mpnn_dir \
+    --mpnn-model-files $models \
+    --initial-agent $moldqn_dir/agent.pkl \
+    --initial-search-space $moldqn_dir/best_mols.json \
+    --initial-database $mpnn_dir/initial_database.json \
+    --qc-spec xtb $@
