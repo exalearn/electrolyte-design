@@ -1,0 +1,8 @@
+all:
+  hostname_pattern: "*"
+  scratch_directory: ./scratch
+  is_batch_node: True
+  mpiexec_command: "mpirun -n {ranks_per_node} -x RANKS={total_ranks} -x OMP_NUM_THREADS={cores_per_rank} -x MKL_NUM_THREADS={cores_per_rank}"
+  jobs_per_node: 1
+  ncores: 4
+  memory: 4
