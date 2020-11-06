@@ -15,9 +15,9 @@ from qcfractal.interface.collections import OptimizationDataset, Dataset
 from qcfractal.interface.collections.collection import Collection
 from qcfractal.interface.models import ComputeResponse
 
-from .specs import get_optimization_specification, get_computation_specification
+from .specs import get_optimization_specification, get_computation_specification, lookup_reference_energies
 from .thermo import compute_zpe
-from .functions import generate_inchi_and_xyz
+from .functions import generate_inchi_and_xyz, subtract_reference_energies
 
 logger = logging.getLogger(__name__)
 
@@ -613,10 +613,10 @@ class HessianDataset(SinglePointDataset):
         return output
 
 
-def compute_ionization_potentials(geometry_data: GeometryDataset,
-                                  solvation_data: SolvationEnergyDataset,
-                                  hessian_data: Optional[HessianDataset] = None) -> pd.DataFrame:
-    """Compute the ionization potential in different solvents
+def collect_molecular_properties(geometry_data: GeometryDataset,
+                                 solvation_data: SolvationEnergyDataset,
+                                 hessian_data: Optional[HessianDataset] = None) -> pd.DataFrame:
+    """Compute the ionization potential and other molecular properties in different solvents
 
     Args:
         geometry_data: Geometry dataset
@@ -629,7 +629,7 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
     # Get the energies in vacuum
     vacuum_energies = geometry_data.get_energies()
     vacuum_energies = dict((i, g) for i, g in vacuum_energies.items() if 'neutral' in g)
-    logger.info(f'Found {len(vacuum_energies)} calculations with all the geometries')
+    logger.info(f'Found {len(vacuum_energies)} calculations with at least the neutral geometry')
 
     # Get the runtimes for the geometry
     wall_times = geometry_data.get_wall_times()
@@ -655,6 +655,9 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
     solvent_energies = solvation_data.get_energies()
     logger.info(f'Found {len(vacuum_energies)} calculations with at least one solvent')
 
+    # Load in the reference energies
+    ref_energies = lookup_reference_energies(geometry_data.qc_spec)
+
     # Compute the IP and EA for each molecule in each solvent
     results = []
     for inchi in vacuum_energies.keys():
@@ -669,10 +672,18 @@ def compute_ionization_potentials(geometry_data: GeometryDataset,
 
         # Initialize the output record
         mol = Chem.MolFromInchi(inchi)
-        data = {'inchi': inchi, 'smiles': Chem.MolToSmiles(mol),
+        Chem.AddHs(mol)
+        n_atoms = mol.GetNumAtoms()
+        n_electrons = sum(a.GetAtomicNum() for a in mol.GetAtoms())
+        u0_atom = subtract_reference_energies(neutral_vac_eng, geoms[inchi]['neutral'], ref_energies)
+        data = {'inchi': inchi,
+                'smiles': Chem.MolToSmiles(mol),
                 'inchi_key': Chem.MolToInchiKey(mol),
+                'n_atoms': n_atoms,
+                'n_electrons': n_electrons,
                 'xyz_neutral': geoms[inchi]['neutral'].to_string('xyz'),
-                'wall_time_neutral': wall_times[inchi]['neutral']}
+                'wall_time_neutral': wall_times[inchi]['neutral'],
+                'u0_atom': u0_atom}
 
         # Compute the EA and IP in each solvent we have
         for label, name in zip(['reduced', 'oxidized'], ['EA', 'IP']):
