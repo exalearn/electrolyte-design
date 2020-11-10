@@ -1,7 +1,7 @@
 """Functions to generate configurations"""
 import os
 
-from parsl import HighThroughputExecutor, ThreadPoolExecutor
+from parsl import HighThroughputExecutor
 from parsl.addresses import address_by_hostname
 from parsl.config import Config
 from parsl.launchers import AprunLauncher, SimpleLauncher
