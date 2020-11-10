@@ -12,7 +12,7 @@ from datetime import datetime
 from functools import partial, update_wrapper
 from queue import Queue, Empty
 from threading import Event, Lock, Thread
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from traceback import TracebackException
 
 import tensorflow as tf
@@ -27,6 +27,7 @@ from moldesign.simulate.functions import compute_atomization_energy
 from moldesign.simulate.specs import lookup_reference_energies, get_qcinput_specification
 from moldesign.utils import get_platform_info
 
+from colmena.thinker import BaseThinker, agent
 from colmena.method_server import ParslMethodServer
 from colmena.redis.queue import ClientQueues, make_queue_pairs
 
@@ -34,7 +35,7 @@ from colmena.redis.queue import ClientQueues, make_queue_pairs
 compute_config = {'nnodes': 1, 'cores_per_rank': 2}
 
 
-class Thinker(Thread):
+class Thinker(BaseThinker):
     """ML-enhanced optimization loop for molecular design"""
 
     def __init__(self, queues: ClientQueues,
@@ -64,17 +65,12 @@ class Thinker(Thread):
             random_frac: Number of molecules to pick at random
             greedy_frac: Number of molecules to pick greedly
         """
-        super().__init__(daemon=True)
+        super().__init__(queues, daemon=True)
 
         # Generic stuff: logging, communication to Method Server
         self.queues = queues
         self.output_dir = output_dir
-
-        self.logger = logging.getLogger(self.__class__.__name__)
-        hnd = logging.FileHandler(os.path.join(output_dir, 'thinker.log'))
-        hnd.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(hnd)
-
+        
         # The ML components
         self.moldqn = initial_moldqn
         init_mols = list(initial_training_set.keys())
@@ -100,7 +96,7 @@ class Thinker(Thread):
         self.queue_length = queue_length
         self._task_queue = Queue(maxsize=queue_length)
         self._update_lock = Lock()  # Prevent models from being used while updating one
-        self._gen_done = Event()
+        self._done = Event()
 
     def _write_result(self, result: BaseModel, filename: str, keep_inputs: bool = True, keep_outputs: bool = True):
         """Write result to a log file
@@ -123,30 +119,32 @@ class Thinker(Thread):
         with open(os.path.join(self.output_dir, filename), 'a') as fp:
             print(result.json(exclude=exclude), file=fp)
 
+    @agent
     def simulation_dispatcher(self):
-        """Runs the ML loop: Generate tasks for the simulator"""
+        """Submit and process simulation tasks"""
 
         self.logger.info('Simulation dispatcher waiting for work')
         for i in range(self.n_parallel):
             smiles, task_info = self._task_queue.get(block=True)
             if smiles in self.search_space:
                 self.search_space.remove(smiles)
-            self.queues.send_inputs(smiles, topic='simulator', method='compute_atomization_energy', keep_inputs=True,
+            self.queues.send_inputs(smiles, topic='simulate', method='compute_atomization_energy', keep_inputs=True,
                                     task_info=task_info)
         self.logger.info('Sent out first set of tasks')
 
         # As they come back submit new ones
-        while not self._gen_done.is_set():
+        self.logger.info(f'Running until database has {self.n_evals} entries')
+        while len(self.database) < self.n_evals and not self._done.is_set():
             # Get the task and store its content
-            result = self.queues.get_result(topic='simulator')
-            self.logger.info('QC task completed')
+            result = self.queues.get_result(topic='simulate')
+            self.logger.info('Retrieved completed QC task')
 
             # Get a new one from the priority queue and submit it
             smiles, task_info = self._task_queue.get()
             if smiles in self.search_space:
                 self.search_space.remove(smiles)
-            self.logger.info(f'Running {smiles} from batch {task_info["batch"]}')
-            self.queues.send_inputs(smiles, topic='simulator', method='compute_atomization_energy', keep_inputs=True,
+            self.logger.info(f'Submitted {smiles} from batch {task_info["batch"]}')
+            self.queues.send_inputs(smiles, topic='simulate', method='compute_atomization_energy', keep_inputs=True,
                                     task_info=task_info)
 
             # Store the content from the previous run
@@ -163,11 +161,14 @@ class Thinker(Thread):
                 self.logger.warning('Calculation failed! See simulation outputs and Parsl log file')
             self._write_result(result, 'simulation_records.jsonld', keep_outputs=True)
 
+        # Mark that we are done (no longer submitting new simulations)
+        self._done.set()
+
         # Waiting for the still-ongoing tasks to complete
         self.logger.info('Collecting the last molecules')
         for i in range(self.n_parallel):
             # Get the task and store its content
-            result = self.queues.get_result(topic='simulator')
+            result = self.queues.get_result(topic='simulate')
             self.logger.info(f'Retrieved {i+1}/{self.n_parallel} on-going tasks')
             if result.success:
                 # Store the result in the database
@@ -181,8 +182,7 @@ class Thinker(Thread):
                 self.logger.warning('Calculation failed! See simulation outputs and Parsl log file')
             self._write_result(result, 'simulation_records.jsonld', keep_outputs=True)
 
-        self.logger.info('Task consumer has completed')
-
+    @agent
     def model_updater(self):
         """Handle updating the ML models"""
 
@@ -201,7 +201,7 @@ class Thinker(Thread):
             self.logger.info(f'Submitted model {ind} to be updated')
 
         # Continually wait for new models to come back
-        while not self._gen_done.is_set():
+        while not self._done.is_set():
             # Wait for a model to be returned
             result = self.queues.get_result(topic='update')
 
@@ -227,8 +227,10 @@ class Thinker(Thread):
             # Save the results
             self._write_result(result, 'update_records.jsonld', keep_inputs=False, keep_outputs=False)
 
-    def task_generator(self):
-        """Run RL to generate new candidates and use MPNNs to screen them"""
+    @agent
+    def task_ranker(self):
+        """Prioritize list of available tasks"""
+
         # Submit some initial molecules so that the simulator gets started immediately
         num_to_seed = self.queue_length
         self.logger.info(f'Sending {num_to_seed} initial molecules')
@@ -237,33 +239,21 @@ class Thinker(Thread):
             self._task_queue.put((smiles, {'reason': 'initial', 'batch': -1, 'smiles': smiles}))
 
         # Perform the design loop iteratively
-        step_number = 0
-        self.logger.info(f'Running until database has {self.n_evals} entries')
-        while len(self.database) < self.n_evals and not self._gen_done.is_set():
-            self.logger.info(f'Generating new molecules')
-
-            # Use RL to generate new molecules
-            with self._update_lock:
-                self.moldqn.env.reward_fn.model = choice(self.mpnns)[0]
-                self.queues.send_inputs(self.moldqn, method='generate_molecules', topic='generate')
-            result = self.queues.get_result(topic='generate')
-            self._write_result(result, 'generate_records.jsonld', keep_inputs=False, keep_outputs=False)
-            new_molecules, self.moldqn = result.value  # Also update the RL agent
-            self.logger.info(f'Generated {len(new_molecules)} candidate molecules')
-
-            # Update the list of molecules
-            self.search_space = list(set(self.search_space).union(new_molecules).difference(self.database.keys()))
-            self.logger.info(f'Search space now includes {len(self.search_space)} molecules')
+        batch_number = 0
+        while not self._done.is_set():
+            # Get the current copy of the search space
+            search_space = self.search_space.copy()
 
             # Assign them scores
             with self._update_lock:
                 self.queues.send_inputs([MPNNMessage(m) for m, _ in self.mpnns],
-                                        self.search_space, method='evaluate_mpnn', topic='generate')
+                                        search_space, method='evaluate_mpnn', topic='rank')
 
                 # Capture the training set of models used in this inference run
                 training_sets = [s for _, s in self.mpnns]
 
-            result = self.queues.get_result(topic='generate')
+            self.logger.info(f'Submitted inference task')
+            result = self.queues.get_result(topic='rank')
             scores = result.value
             result.task_info = {'training_sets': training_sets}  # Record the training sets
             self._write_result(result, 'screen_records.jsonld', keep_inputs=False, keep_outputs=False)
@@ -272,8 +262,8 @@ class Thinker(Thread):
             # Assign scores to each SMILES
             mean_score = scores.mean(axis=1)
             std_score = scores.std(axis=1)
-            task_options = [{'smiles': s, 'pred': float(m), 'pred_std': float(u), 'batch': step_number}
-                            for s, m, u in zip(self.search_space, mean_score, std_score)]
+            task_options = [{'smiles': s, 'pred': float(m), 'pred_std': float(u), 'batch': batch_number}
+                            for s, m, u in zip(search_space, mean_score, std_score)]
 
             # Rank according to different metrics. Best at the right end (so .pop works)
             random_selections = task_options.copy()
@@ -290,7 +280,7 @@ class Thinker(Thread):
                 if min(map(len, [greedy_selections, random_selections, uq_selections])) == 0:
                     self.logger.info('Ran out of molecules to select from')
                     break
-                
+
                 # Pick a task
                 r = random()
                 if r < self.greedy_frac:
@@ -304,7 +294,8 @@ class Thinker(Thread):
                     task['reason'] = 'uq'
 
                 # If it is not yet selected
-                if task['smiles'] not in already_picked:
+                if (task['smiles'] not in already_picked
+                   and task['smiles'] not in self.database):
                     already_picked.add(task['smiles'])
                     selections.append(task)
             self.logger.info(f'Selected {len(selections)} new molecules')
@@ -320,36 +311,27 @@ class Thinker(Thread):
             # Add requested simulations to the queue
             for rank, task in enumerate(selections):
                 self._task_queue.put((task['smiles'], task))
-            step_number += 1  # Increment the loop
+            batch_number += 1  # Increment the loop
             self.logger.info('Added all of them the task queue')
 
-        self.logger.info('No longer generating new candidates')
-        self._gen_done.set()
-
-    def run(self):
-        threads = []
-        functions = [self.simulation_dispatcher, self.task_generator, self.model_updater]
-        with ThreadPoolExecutor(max_workers=len(functions)) as executor:
-            # Submit all of the worker threads
-            for f in functions:
-                threads.append(executor.submit(f))
-            self.logger.info(f'Launched all {len(functions)} functions')
-
-            # Wait until any one completes, then set the "gen_done" event to
-            #  signal all remaining threads to finish after completing their work
-            finished = next(as_completed(threads))
-            self.logger.info('One of the threads has exited')
-            self._gen_done.set()
-            exc = finished.exception()
-            if exc is None:
-                self.logger.info('Thread completed w/o problems')
-            else:
-                tb = TracebackException.from_exception(exc)
-                self.logger.warning(f'Thread failed: {exc}.\nTraceback: {"".join(tb.format())}')
+    @agent
+    def task_generator(self):
+        """Run RL to generate new candidates and use MPNNs to screen them"""
+        while not self._done.is_set():
+            # Use RL to generate new molecules
+            with self._update_lock:
+                self.moldqn.env.reward_fn.model = choice(self.mpnns)[0]
+                self.queues.send_inputs(self.moldqn, method='generate_molecules', topic='generate')
+            self.logger.info("Submitted task generator")
             
-            # Cycle through the threads until all exit
-            for t in threads:
-                t.result()
+            result = self.queues.get_result(topic='generate')
+            self._write_result(result, 'generate_records.jsonld', keep_inputs=False, keep_outputs=False)
+            new_molecules, self.moldqn = result.value  # Also update the RL agent
+            self.logger.info(f'Generated {len(new_molecules)} candidate molecules')
+
+            # Update the list of molecules
+            self.search_space = list(set(self.search_space).union(new_molecules).difference(self.database.keys()))
+            self.logger.info(f'Search space now includes {len(self.search_space)} molecules')
 
 
 if __name__ == '__main__':
@@ -369,7 +351,7 @@ if __name__ == '__main__':
                         choices=['normal_basis', 'xtb', 'small_basis'])
     parser.add_argument("--parallel-guesses", default=1, type=int,
                         help="Number of calculations to maintain in parallel")
-    parser.add_argument("--parallel-updating", default=1, type=int,
+    parser.add_argument("--parallel-updating", default=2, type=int,
                         help="Number of model retraining to perform in parallel")
     parser.add_argument("--rl-episodes", default=10, type=int,
                         help="Number of episodes to run ing the reinforcement learning pipeline")
@@ -443,7 +425,7 @@ if __name__ == '__main__':
                         level=logging.INFO, handlers=handlers)
 
     # Write the configuration
-    config = theta_xtb_config(1, os.path.join(out_dir, 'run-info'), xtb_per_node=16, ml_tasks_per_node=2)
+    config = theta_xtb_config(2, os.path.join(out_dir, 'run-info'), xtb_per_node=16, ml_tasks_per_node=2)
 
     # Save Parsl configuration
     with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
@@ -452,7 +434,7 @@ if __name__ == '__main__':
     # Connect to the redis server
     client_queues, server_queues = make_queue_pairs(args.redishost, args.redisport,
                                                     serialization_method="pickle",
-                                                    topics=['simulator', 'update', 'generate'],
+                                                    topics=['simulate', 'update', 'generate', 'rank'],
                                                     keep_inputs=False)
 
     # Apply wrappers to functions to affix static settings
