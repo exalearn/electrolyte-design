@@ -1,6 +1,6 @@
 # Electrolyte Design Toolkit
 
-![Python package](https://github.com/exalearn/electrolyte-design/workflows/Python%20package/badge.svg)
+[![Python package](https://github.com/exalearn/electrolyte-design/workflows/Python%20package/badge.svg)](https://github.com/exalearn/electrolyte-design/actions?query=workflow%3A%22Python+package%22)
 
 Design toolkit for molecular electrolytes.
 Includes tools needed to launch high-throughput workflows 
