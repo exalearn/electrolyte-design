@@ -1,7 +1,7 @@
 """Functions to generate configurations"""
 import os
 
-from parsl import HighThroughputExecutor, ThreadPoolExecutor
+from parsl import HighThroughputExecutor
 from parsl.addresses import address_by_hostname
 from parsl.config import Config
 from parsl.launchers import AprunLauncher, SimpleLauncher
@@ -29,8 +29,7 @@ def simple_config(n_workers: int, log_dir: str) -> Config:
                     init_blocks=1,
                     max_blocks=1
                 ),
-            ),
-            ThreadPoolExecutor(label="local_threads", max_threads=4)
+            )
         ],
         run_dir=log_dir,
         strategy=None
@@ -66,8 +65,7 @@ def local_interleaved_config(qc_workers: int, ml_workers: int, log_dir: str) -> 
                     init_blocks=1,
                     max_blocks=1
                 ),
-            ),
-            ThreadPoolExecutor(label="local_threads", max_threads=4)
+            )
         ],
         run_dir=log_dir,
         strategy=None
@@ -97,6 +95,7 @@ def theta_nwchem_config(ml_workers: int, log_dir: str, nodes_per_nwchem: int = 2
                 address=address_by_hostname(),
                 label="qc",
                 max_workers=nwc_workers,
+                cores_per_worker=1e-6,
                 provider=LocalProvider(
                     nodes_per_block=1,
                     init_blocks=1,
@@ -104,7 +103,7 @@ def theta_nwchem_config(ml_workers: int, log_dir: str, nodes_per_nwchem: int = 2
                     launcher=SimpleLauncher(),  # Places worker on the launch node
                     worker_init='''
 module load miniconda-3
-conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env
+conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
 ''',
                 ),
             ),
@@ -119,11 +118,10 @@ conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env
                     launcher=AprunLauncher(overrides='-d 64 --cc depth'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3
-conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env
+conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
     ''',
                 ),
-            ),
-            ThreadPoolExecutor(label="local_threads", max_threads=4)
+            )
         ],
         monitoring=MonitoringHub(
             hub_address=address_by_hostname(),
@@ -169,7 +167,7 @@ def theta_xtb_config(ml_workers: int, log_dir: str, xtb_per_node: int = 1,
                     launcher=AprunLauncher(overrides='-d 64 --cc depth'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3
-conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env
+conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
 ''',
                 ),
             ),
@@ -185,11 +183,10 @@ conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env
                     launcher=AprunLauncher(overrides='-d 64 --cc depth'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3
-conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env
+conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
 ''',
                 ),
-            ),
-            ThreadPoolExecutor(label="local_threads", max_threads=4)
+            )
         ],
         monitoring=MonitoringHub(
             hub_address=address_by_hostname(),
@@ -226,7 +223,7 @@ def multisite_nwchem_config() -> Config:
                     worker_init='''
 module load miniconda-3
 export PATH=~/software/psi4/bin:$PATH
-conda activate /lus/theta-fs0/projects/CSC249ADCD08/colmena/env
+conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
 
 # NWChem settings
 export PATH="/home/lward/software/nwchem-6.8.1/bin/LINUX64:$PATH"
@@ -262,8 +259,7 @@ conda activate colmena_full
 export CUDA_VISIBLE_DEVICES=17  # Pins to a GPU worker
 ''',
                 ),
-            ),
-            ThreadPoolExecutor(label="local_threads", max_threads=4)
+            )
         ],
         strategy=None,
     )
