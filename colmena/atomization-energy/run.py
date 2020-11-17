@@ -21,7 +21,7 @@ from moldesign.sample.rl.agents.moldqn import DQNFinalState
 from moldesign.sample.rl.envs.rewards.mpnn import MPNNReward
 from moldesign.score.mpnn.layers import custom_objects
 from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, MPNNMessage
-from moldesign.config import theta_xtb_config
+from moldesign.config import theta_nwchem_config, theta_xtb_config
 from moldesign.sample.rl import generate_molecules
 from moldesign.simulate.functions import compute_atomization_energy
 from moldesign.simulate.specs import lookup_reference_energies, get_qcinput_specification
@@ -30,9 +30,6 @@ from moldesign.utils import get_platform_info
 from colmena.thinker import BaseThinker, agent
 from colmena.method_server import ParslMethodServer
 from colmena.redis.queue import ClientQueues, make_queue_pairs
-
-# Define the compute setting for the system (only relevant for NWChem)
-compute_config = {'nnodes': 1, 'cores_per_rank': 2}
 
 
 class Thinker(BaseThinker):
@@ -349,6 +346,8 @@ if __name__ == '__main__':
     parser.add_argument('--initial-database', help='Path to the database used to train the MPNN', required=True)
     parser.add_argument('--qc-spec', help='Name of the QC specification', required=True,
                         choices=['normal_basis', 'xtb', 'small_basis'])
+    parser.add_argument('--qc-parallelism', help='Degree of parallelism for QC tasks. For NWChem, number of nodes per task.'
+                        ' For XTB, number of tasks per node.', default=1, type=int)
     parser.add_argument("--parallel-guesses", default=1, type=int,
                         help="Number of calculations to maintain in parallel")
     parser.add_argument("--parallel-updating", default=2, type=int,
@@ -383,6 +382,9 @@ if __name__ == '__main__':
 
     # Get QC specification
     qc_spec, code = get_qcinput_specification(args.qc_spec)
+    if args.qc_spec != "xtb":
+        qc_spec.keywords["dft__iterations"] = 150
+        qc_spec.keywords["geometry__noautoz"] = True
     ref_energies = lookup_reference_energies(args.qc_spec)
 
     # Make the reward function
@@ -425,7 +427,10 @@ if __name__ == '__main__':
                         level=logging.INFO, handlers=handlers)
 
     # Write the configuration
-    config = theta_xtb_config(2, os.path.join(out_dir, 'run-info'), xtb_per_node=16, ml_tasks_per_node=2)
+    if args.qc_spec == "xtb":
+        config = theta_xtb_config(2, os.path.join(out_dir, 'run-info'), xtb_per_node=args.qc_parallelism, ml_tasks_per_node=2)
+    else:
+        config = theta_nwchem_config(3, os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.qc_parallelism)
 
     # Save Parsl configuration
     with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
@@ -437,6 +442,9 @@ if __name__ == '__main__':
                                                     topics=['simulate', 'update', 'generate', 'rank'],
                                                     keep_inputs=False)
 
+    # Define the compute setting for the system (only relevant for NWChem)
+    compute_config = {'nnodes': args.qc_parallelism, 'cores_per_rank': 2}
+
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
     #  TODO (wardlt): Have users set the method name explicitly
@@ -445,7 +453,7 @@ if __name__ == '__main__':
 
     my_compute_atomization = partial(compute_atomization_energy, compute_hessian=False,
                                      qc_config=qc_spec, reference_energies=ref_energies,
-                                     compute_config={'ncores': 4}, code=code)
+                                     compute_config=compute_config, code=code)
     my_compute_atomization = update_wrapper(my_compute_atomization, compute_atomization_energy)
 
     my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types)
