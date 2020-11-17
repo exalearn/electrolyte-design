@@ -95,6 +95,7 @@ def theta_nwchem_config(ml_workers: int, log_dir: str, nodes_per_nwchem: int = 2
                 address=address_by_hostname(),
                 label="qc",
                 max_workers=nwc_workers,
+                cores_per_worker=1e-6,
                 provider=LocalProvider(
                     nodes_per_block=1,
                     init_blocks=1,
