@@ -196,12 +196,31 @@ class Thinker(BaseThinker):
                                     method='update_mpnn', topic='update',
                                     task_info={'index': ind, 'training_molecules': list(self.database.keys())})
             self.logger.info(f'Submitted model {ind} to be updated')
+            
+        # Make a directory to store updated models
+        model_dir = os.path.join(self.output_dir, 'models')
+        os.makedirs(model_dir, exist_ok=True)
 
         # Continually wait for new models to come back
+        result_ind = 0
         while not self._done.is_set():
             # Wait for a model to be returned
             result = self.queues.get_result(topic='update')
 
+            # Update the weights
+            complted_ind = result.task_info['index']
+            if result.success:
+                new_weights, _ = result.value
+                with self._update_lock:
+                    self.mpnns[complted_ind][0].set_weights(new_weights)
+                    self.mpnns[complted_ind][1] = result.task_info['training_molecules']
+                self.logger.info(f'Updated weights for model {complted_ind}')
+            else:
+                self.logger.info(f'Retraining failed for model {complted_ind}')
+
+            # Mark the model as ready to be updated again
+            ready_to_retrain.append(complted_ind)
+            
             # Submit another model to be updated
             ind = ready_to_retrain.popleft()
             mpnn = self.mpnns[ind]
@@ -210,19 +229,16 @@ class Thinker(BaseThinker):
                                     task_info={'index': ind, 'training_molecules': list(self.database.keys())})
             self.logger.info(f'Submitted model {ind} to be updated')
 
-            # Update the weights
-            complted_ind = result.task_info['index']
-            new_weights, _ = result.value
-            with self._update_lock:
-                self.mpnns[complted_ind][0].set_weights(new_weights)
-                self.mpnns[complted_ind][1] = result.task_info['training_molecules']
-            self.logger.info(f'Updated weights for model {complted_ind}')
-
-            # Mark the model as ready to be updated again
-            ready_to_retrain.append(complted_ind)
-
             # Save the results
             self._write_result(result, 'update_records.jsonld', keep_inputs=False, keep_outputs=False)
+            
+            # If the updated model, if re-training was successful
+            result_ind += 1
+            if result.success:
+                model_name = os.path.join(model_dir, f'{result_ind}_model_{complted_ind}.h5')
+                self.logger.info(f'Saving model {complted_ind} to disk as {model_name}')
+                self.mpnns[complted_ind][0].save(model_name, include_optimizer=False)
+                self.logger.info('Model saved. Waiting for next update task to complete')
 
     @agent
     def task_ranker(self):
@@ -247,7 +263,7 @@ class Thinker(BaseThinker):
                                         search_space, method='evaluate_mpnn', topic='rank')
 
                 # Capture the training set of models used in this inference run
-                training_sets = [s for _, s in self.mpnns]
+                training_sets = [s.copy() for _, s in self.mpnns]
 
             self.logger.info(f'Submitted inference task')
             result = self.queues.get_result(topic='rank')
@@ -320,15 +336,20 @@ class Thinker(BaseThinker):
                 self.moldqn.env.reward_fn.model = choice(self.mpnns)[0]
                 self.queues.send_inputs(self.moldqn, method='generate_molecules', topic='generate')
             self.logger.info("Submitted task generator")
-            
+
+            # Record the result
             result = self.queues.get_result(topic='generate')
             self._write_result(result, 'generate_records.jsonld', keep_inputs=False, keep_outputs=False)
-            new_molecules, self.moldqn = result.value  # Also update the RL agent
-            self.logger.info(f'Generated {len(new_molecules)} candidate molecules')
-
+            
             # Update the list of molecules
-            self.search_space = list(set(self.search_space).union(new_molecules).difference(self.database.keys()))
-            self.logger.info(f'Search space now includes {len(self.search_space)} molecules')
+            if result.success:
+                new_molecules, self.moldqn = result.value  # Also update the RL agent
+                self.logger.info(f'Generated {len(new_molecules)} candidate molecules')
+
+                self.search_space = list(set(self.search_space).union(new_molecules).difference(self.database.keys()))
+                self.logger.info(f'Search space now includes {len(self.search_space)} molecules')
+            else:
+                self.logger.info('Generation task failed. Resubmitting')
 
 
 if __name__ == '__main__':
@@ -430,7 +451,8 @@ if __name__ == '__main__':
     if args.qc_spec == "xtb":
         config = theta_xtb_config(2, os.path.join(out_dir, 'run-info'), xtb_per_node=args.qc_parallelism, ml_tasks_per_node=2)
     else:
-        config = theta_nwchem_config(3, os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.qc_parallelism)
+        # ML nodes: N for updating models, 1 for MolDQN, 1 for inference runs
+        config = theta_nwchem_config(args.parallel_updating + 2, os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.qc_parallelism)
 
     # Save Parsl configuration
     with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
@@ -456,7 +478,7 @@ if __name__ == '__main__':
                                      compute_config=compute_config, code=code)
     my_compute_atomization = update_wrapper(my_compute_atomization, compute_atomization_energy)
 
-    my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types)
+    my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types, batch_size=1024)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
     my_update_mpnn = partial(update_mpnn, atom_types=atom_types, bond_types=bond_types)
