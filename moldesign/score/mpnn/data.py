@@ -1,6 +1,6 @@
 """Utilities for creating a data-loader"""
 from functools import partial
-from typing import List, Tuple
+from typing import List, Tuple, Sequence
 
 import tensorflow as tf
 import networkx as nx
@@ -122,17 +122,22 @@ def convert_nx_to_dict(graph: nx.Graph, atom_types: List[int], bond_types: List[
     }
 
 
-def parse_records(example_proto, target_name: str = 'pIC50'):
+def parse_records(example_proto, target_name: str = 'pIC50',
+                  target_shape: Sequence[int] = ()):
     """Parse data from the TFRecord
 
     Args:
         example_proto: Batch of serialized TF records
         target_name (str): Name of the output property
+        target_shape
     Returns:
         Batch of parsed TF records
     """
+
+    default_target = np.zeros(target_shape) * np.nan
+
     features = {
-        target_name: tf.io.FixedLenFeature([], tf.float32, default_value=np.nan),
+        target_name: tf.io.FixedLenFeature(target_shape, tf.float32, default_value=default_target),
         'n_atom': tf.io.FixedLenFeature([], tf.int64),
         'n_bond': tf.io.FixedLenFeature([], tf.int64),
         'connectivity': tf.io.VarLenFeature(tf.int64),
@@ -185,13 +190,14 @@ def make_training_tuple(batch, target_name='pIC50'):
         if k != target_name:
             inputs[k] = v
         else:
-            output = tf.expand_dims(v, 1)
+            output = v
     return inputs, output
 
 
 def make_data_loader(file_path, batch_size=32, shuffle_buffer=None,
                      n_threads=tf.data.experimental.AUTOTUNE, shard=None,
-                     cache: bool = False, output_property: str = 'pIC50') -> tf.data.TFRecordDataset:
+                     cache: bool = False, output_property: str = 'pIC50',
+                     output_shape: Sequence[int] = ()) -> tf.data.TFRecordDataset:
     """Make a data loader for tensorflow
 
     Args:
@@ -202,6 +208,7 @@ def make_data_loader(file_path, batch_size=32, shuffle_buffer=None,
         cache (bool): Whether to load the whole dataset into memory
         shard ((int, int)): Parameters used to shared the dataset: (size, rank)
         output_property (str): Which property to use as the output
+        output_shape ([int]): Shape of the output property
     Returns:
         (tf.data.TFRecordDataset) An infinite dataset generator
     """
@@ -222,7 +229,7 @@ def make_data_loader(file_path, batch_size=32, shuffle_buffer=None,
 
     # Add in the data preprocessing steps
     #  Note that the `batch` is the first operation
-    parse = partial(parse_records, target_name=output_property)
+    parse = partial(parse_records, target_name=output_property, target_shape=output_shape)
     r = r.batch(batch_size).map(parse, n_threads).map(prepare_for_batching, n_threads)
 
     # Return full batches
