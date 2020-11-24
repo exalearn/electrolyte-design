@@ -1,7 +1,6 @@
 """Test data"""
 from typing import Tuple, List
 
-import numpy as np
 import tensorflow as tf
 from pytest import fixture
 
