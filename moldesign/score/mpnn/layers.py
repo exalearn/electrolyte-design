@@ -8,6 +8,7 @@ from typing import List
 
 import tensorflow as tf
 from tensorflow.keras import layers
+from tensorflow.keras import backend as K
 
 
 class MessageBlock(layers.Layer):
@@ -86,7 +87,8 @@ class GraphNetwork(layers.Layer):
     def __init__(self, atom_classes, bond_classes, atom_dimension, num_messages,
                  output_layer_sizes=None, atomic_contribution: bool = False,
                  attention_mlp_sizes: List[int] = None, n_outputs: int = 1,
-                 reduce_function: str = 'sum', **kwargs):
+                 reduce_function: str = 'sum',
+                 return_atomic_features: bool = False, **kwargs):
         """
         Args:
              atom_classes (int): Number of possible types of nodes
@@ -99,6 +101,7 @@ class GraphNetwork(layers.Layer):
              reduce_function (str): Which ``segment_*`` function to use to reduce atomic representations.
                 Can also be "attention"
              dropout (float): Dropout rate
+             return_atom_features (bool): Whether to return atomic features
         """
         super(GraphNetwork, self).__init__(**kwargs)
         self.atom_embedding = layers.Embedding(atom_classes, atom_dimension, name='atom_embedding')
@@ -106,6 +109,7 @@ class GraphNetwork(layers.Layer):
         self.message_layers = [MessageBlock(atom_dimension) for _ in range(num_messages)]
         self.atomic_contribution = atomic_contribution
         self.n_outputs = n_outputs
+        self.atomic_features = return_atomic_features
 
         # Make the output MLP
         if output_layer_sizes is None:
@@ -135,6 +139,10 @@ class GraphNetwork(layers.Layer):
         # Perform the message passing
         for message_layer in self.message_layers:
             atom_state, bond_state = message_layer([atom_state, bond_state, connectivity])
+
+        # If desired, stop here and return the atomic features
+        if self.atomic_features:
+            return atom_state
 
         if self.atomic_contribution:
             # Represent the atom state as the state of the molecule
@@ -252,6 +260,34 @@ class Squeeze(layers.Layer):
         config = super().get_config()
         config['axis'] = self.axis
         return config
+
+
+class CartesianProduct(layers.Layer):
+    """Computes a Cartesian product of two 2D arrays
+
+    Given 2D tensors of shapes [a, b] and [c, d], returns
+    a tensor of [a, c, b + d]
+    """
+
+    def call(self, inputs):
+        a, b = inputs
+
+        # Expand both arrays to (M, N, x) arrays
+        a_tiled = K.tile(K.expand_dims(a, 1), [1, K.shape(b)[0], 1])
+        b_tiled = K.tile(K.expand_dims(b, 0), [K.shape(a)[0], 1, 1])
+
+        return K.concatenate([a_tiled, b_tiled], axis=2)
+
+
+class DenormalizeLayer(layers.Layer):
+    """Layer to scale the output layer to match the input data distribution"""
+
+    def build(self, input_shape):
+        self.mean = self.add_weight('mean', shape=(input_shape[-1],))
+        self.std = self.add_weight('std', shape=(input_shape[-1],))
+
+    def call(self, inputs, **kwargs):
+        return inputs * self.std + self.mean
 
 
 custom_objects = {
