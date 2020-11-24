@@ -81,20 +81,21 @@ if __name__ == "__main__":
     
     # Load in the dielectric constants
     with open('dielectric_constants.json') as fp:
-        dielectric_constants = json.load(fp)
+        solvent_data = json.load(fp)
+        n_solvents = len(solvent_data['e'])
 
     # Making the data loaders
     train_loader = make_data_loader('train_data.proto', shuffle_buffer=32768,
                                     batch_size=args.batch_size, 
-                                    output_property='solv_energies', output_shape=(len(dielectric_constants),))
+                                    output_property='solv_energies', output_shape=(n_solvents,))
     test_loader = make_data_loader('test_data.proto', batch_size=args.batch_size,
-                                   output_property='solv_energies', output_shape=(len(dielectric_constants),))
+                                   output_property='solv_energies', output_shape=(n_solvents,))
     val_loader = make_data_loader('valid_data.proto', batch_size=args.batch_size, 
-                                  output_property='solv_energies', output_shape=(len(dielectric_constants),))
+                                  output_property='solv_energies', output_shape=(n_solvents,))
     
     # Make a function to inject dielectric constants into input
     def add_constants(inputs, outputs):
-        inputs['dielectric_constants'] = dielectric_constants
+        inputs['dielectric_constants'] = solvent_data['e']
         return inputs, outputs
     
     train_loader = train_loader.map(add_constants)
@@ -109,7 +110,7 @@ if __name__ == "__main__":
 
     # Make the model
     model = build_fn(atom_features=args.atom_features, message_steps=args.num_messages,
-                     output_layers=args.output_layers, n_outputs=len(dielectric_constants))
+                     output_layers=args.output_layers, n_outputs=n_solvents)
 
     # Set the scale for the output parameter
     ic50s = np.concatenate([x[1].numpy() for x in iter(train_loader)], axis=0)
@@ -137,11 +138,19 @@ if __name__ == "__main__":
     )
 
     # Run on the validation set and assess statistics
-    y_true = np.hstack([x[1].numpy()[:, 0] for x in iter(test_loader)])
+    y_true = np.vstack([x[1].numpy() for x in iter(test_loader)])
     y_pred = np.squeeze(model.predict(test_loader))
 
-    pd.DataFrame({'true': y_true, 'pred': y_pred}).to_csv(os.path.join(test_dir, 'test_results.csv'), index=False)
+    # Save as a dataframe
+    cols = solvent_data['solvents'] + ['pred_' + x for x in solvent_data['solvents']]
 
+    pd.DataFrame(np.hstack((y_true, y_pred)), columns=cols).to_csv(os.path.join(test_dir, 'test_results.csv'), index=False)
+
+    # Flatten the data before computing performance statistics
+    y_true = y_true.ravel()
+    y_pred = y_pred.ravel()
+
+    # Compute test performance
     with open(os.path.join(test_dir, 'test_summary.json'), 'w') as fp:
         json.dump({
             'r2_score': float(np.corrcoef(y_true, y_pred)[1, 0] ** 2),  # float() converts from np.float32
