@@ -1,5 +1,5 @@
 """Functions for updating and performing bulk inference using an Keras MPNN model"""
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 
 import numpy as np
 import tensorflow as tf
@@ -7,6 +7,9 @@ import tensorflow as tf
 from moldesign.score.mpnn.data import convert_nx_to_dict, _merge_batch, GraphLoader
 from moldesign.score.mpnn.layers import custom_objects
 from moldesign.utils.conversions import convert_smiles_to_nx
+
+
+_model_cache = {}
 
 
 # TODO (wardlt): Make this Keras message object usable elsewhere
@@ -29,24 +32,42 @@ class MPNNMessage:
         return model
 
 
-def evaluate_mpnn(model_msg: List[MPNNMessage], smiles: List[str],
-                  atom_types: List[int], bond_types: List[str], batch_size: int = 128) -> np.ndarray:
+# TODO (wardlt): Split into multiple functions? I don't like having so many input type options
+def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List[str]],
+                  smiles: List[str], atom_types: List[int], bond_types: List[str],
+                  batch_size: int = 128, cache: bool = True) -> np.ndarray:
     """Run inference on a list of molecules
 
     Args:
-        model_msg: List of MPNNs to evaluate
+        model_msg: List of MPNNs to evaluate. Accepts either a pickled message, model, or a path
         smiles: List of molecules to evaluate
         atom_types: List of known atom types
         bond_types: List of known bond types
-        batch_size: List of molecules to create into matches
+        batch_size: Number of molecules per batch
+        cache: Whether to cache models if being read from disk
     Returns:
         Predicted value for each molecule
     """
 
-    # Rebuild the model
-    tf.keras.backend.clear_session()
-    models = [m.get_model() for m in model_msg]
-
+    # Access the model
+    if isinstance(model_msg[0], MPNNMessage):
+        # Unpack the messages
+        models = [m.get_model() for m in model_msg]
+    elif isinstance(model_msg[0], str):
+        # Load the model from disk
+        if cache:
+            models = []
+            for p in model_msg:
+                if p not in _model_cache:
+                    _model_cache[p] = tf.keras.models.load_model(p, custom_objects=custom_objects)
+                models.append(_model_cache[p])
+        else:
+            models = [tf.keras.models.load_model(p, custom_objects=custom_objects)
+                     for p in model_msg]
+    else:
+        # No action needed
+        models = model_msg
+    
     # Convert all SMILES strings to batches of molecules
     # TODO (wardlt): Use multiprocessing. Could benefit from a persistent Pool to avoid loading in TF many times
     mols = [convert_nx_to_dict(convert_smiles_to_nx(s), atom_types, bond_types) for s in smiles]
