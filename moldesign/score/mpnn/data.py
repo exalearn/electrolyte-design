@@ -6,7 +6,7 @@ import tensorflow as tf
 import networkx as nx
 import numpy as np
 
-from moldesign.utils.conversions import convert_nx_to_smiles, convert_smiles_to_nx, convert_nx_to_dict
+from moldesign.utils.conversions import convert_smiles_to_nx, convert_nx_to_dict
 
 
 def _numpy_to_tf_feature(value):
