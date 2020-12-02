@@ -157,7 +157,6 @@ def convert_smiles_to_dict(smiles: str, atom_types: List[int], bond_types: List[
         add_hs: Whether to add explicit hydrogens
     Returns:
         (dict) Molecule as a dict
-    """ 
-    
+    """
     graph = convert_smiles_to_nx(smiles, add_hs=add_hs)
     return convert_nx_to_dict(graph, atom_types, bond_types)

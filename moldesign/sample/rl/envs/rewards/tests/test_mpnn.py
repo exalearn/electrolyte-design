@@ -30,4 +30,3 @@ def test_add_hs(model, atom_types, bond_types):
     graph = convert_smiles_to_nx('C')
     with raises(ValueError, match=r"^1 is not in"):
         reward(graph)
-

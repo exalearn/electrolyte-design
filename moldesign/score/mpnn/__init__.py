@@ -8,7 +8,7 @@ import tensorflow as tf
 
 from moldesign.score.mpnn.data import _merge_batch, GraphLoader
 from moldesign.score.mpnn.layers import custom_objects
-from moldesign.utils.conversions import convert_smiles_to_nx, convert_nx_to_dict, convert_smiles_to_dict
+from moldesign.utils.conversions import convert_smiles_to_dict
 
 
 # Process-local caches
