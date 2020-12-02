@@ -1,15 +1,19 @@
 """Functions for updating and performing bulk inference using an Keras MPNN model"""
-from typing import List, Dict, Tuple, Union
+from multiprocessing import Pool
+from functools import partial
+from typing import List, Dict, Tuple, Union, Optional
 
 import numpy as np
 import tensorflow as tf
 
-from moldesign.score.mpnn.data import convert_nx_to_dict, _merge_batch, GraphLoader
+from moldesign.score.mpnn.data import _merge_batch, GraphLoader
 from moldesign.score.mpnn.layers import custom_objects
-from moldesign.utils.conversions import convert_smiles_to_nx
+from moldesign.utils.conversions import convert_smiles_to_nx, convert_nx_to_dict, convert_smiles_to_dict
 
 
-_model_cache = {}
+# Process-local caches
+_model_cache = {}  # Models loaded from disk
+_pool = None  # Multiprocessing
 
 
 # TODO (wardlt): Make this Keras message object usable elsewhere
@@ -35,7 +39,7 @@ class MPNNMessage:
 # TODO (wardlt): Split into multiple functions? I don't like having so many input type options
 def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List[str]],
                   smiles: List[str], atom_types: List[int], bond_types: List[str],
-                  batch_size: int = 128, cache: bool = True) -> np.ndarray:
+                  batch_size: int = 128, cache: bool = True, n_jobs: Optional[int] = 1) -> np.ndarray:
     """Run inference on a list of molecules
 
     Args:
@@ -45,9 +49,13 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
         bond_types: List of known bond types
         batch_size: Number of molecules per batch
         cache: Whether to cache models if being read from disk
+        n_jobs: Number of parallel jobs to run. Set `None` to use total number of cores
+            Note: The Pool is cached, so the first value of n_jobs is set to will remain
+            for the life of the process (except if the value is 1, which does not use a Pool)
     Returns:
         Predicted value for each molecule
     """
+    global _pool
 
     # Access the model
     if isinstance(model_msg[0], MPNNMessage):
@@ -70,7 +78,13 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
     
     # Convert all SMILES strings to batches of molecules
     # TODO (wardlt): Use multiprocessing. Could benefit from a persistent Pool to avoid loading in TF many times
-    mols = [convert_nx_to_dict(convert_smiles_to_nx(s), atom_types, bond_types) for s in smiles]
+    if n_jobs == 1:
+        mols = [convert_smiles_to_dict(s, atom_types, bond_types, add_hs=True) for s in smiles]
+    else:
+        if _pool is None:
+            _pool = Pool(n_jobs)
+        f = partial(convert_smiles_to_dict, atom_types=atom_types, bond_types=bond_types, add_hs=True)
+        mols = _pool.map(f, smiles)
     chunks = [mols[start:start + batch_size] for start in range(0, len(mols), batch_size)]
     batches = [_merge_batch(c) for c in chunks]
 
