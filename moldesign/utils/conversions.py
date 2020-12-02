@@ -1,3 +1,6 @@
+from typing import List
+
+import numpy as np
 import networkx as nx
 from rdkit import Chem
 
@@ -91,3 +94,70 @@ def convert_smiles_to_nx(smiles: str, add_hs: bool = False) -> nx.Graph:
 def convert_nx_to_smiles(graph: nx.Graph) -> str:
     """Compute a SMILES string from a networkx graph"""
     return Chem.MolToSmiles(convert_nx_to_rdkit(graph))
+
+
+def convert_nx_to_dict(graph: nx.Graph, atom_types: List[int], bond_types: List[str]) -> dict:
+    """Convert networkx representation of a molecule to an MPNN-ready dict
+
+    Args:
+        graph: Molecule to be converted
+        atom_types: Lookup table of observed atom types
+        bond_types: Lookup table of observed bond types
+    Returns:
+        (dict) Molecule as a dict
+    """
+
+    # Get the atom types
+    atom_type = [n['atomic_num'] for _, n in graph.nodes(data=True)]
+    atom_type_id = list(map(atom_types.index, atom_type))
+
+    # Get the bond types, making the data
+    connectivity = []
+    edge_type = []
+    for a, b, d in graph.edges(data=True):
+        connectivity.append([a, b])
+        connectivity.append([b, a])
+        edge_type.append(str(d['bond_type']))
+        edge_type.append(str(d['bond_type']))
+    edge_type_id = list(map(bond_types.index, edge_type))
+
+    # Sort connectivity array by the first column
+    #  This is needed for the MPNN code to efficiently group messages for
+    #  each node when performing the message passing step
+    connectivity = np.array(connectivity)
+    if connectivity.size > 0:
+        # Skip a special case of a molecule w/o bonds
+        inds = np.lexsort((connectivity[:, 1], connectivity[:, 0]))
+        connectivity = connectivity[inds, :]
+
+        # Tensorflow's "segment_sum" will cause problems if the last atom
+        #  is not bonded because it returns an array
+        if connectivity.max() != len(atom_type) - 1:
+            smiles = convert_nx_to_smiles(graph)
+            raise ValueError(f"Problem with unconnected atoms for {smiles}")
+    else:
+        connectivity = np.zeros((0, 2))
+
+    return {
+        'n_atom': len(atom_type),
+        'n_bond': len(edge_type),
+        'atom': atom_type_id,
+        'bond': edge_type_id,
+        'connectivity': connectivity
+    }
+
+
+def convert_smiles_to_dict(smiles: str, atom_types: List[int], bond_types: List[str], add_hs: bool = False) -> dict:
+    """Convert networkx representation of a molecule to an MPNN-ready dict
+
+    Args:
+        smiles: Molecule to be converted
+        atom_types: Lookup table of observed atom types
+        bond_types: Lookup table of observed bond types
+        add_hs: Whether to add explicit hydrogens
+    Returns:
+        (dict) Molecule as a dict
+    """ 
+    
+    graph = convert_smiles_to_nx(smiles, add_hs=add_hs)
+    return convert_nx_to_dict(graph, atom_types, bond_types)

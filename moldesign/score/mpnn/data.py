@@ -6,7 +6,7 @@ import tensorflow as tf
 import networkx as nx
 import numpy as np
 
-from moldesign.utils.conversions import convert_nx_to_smiles, convert_smiles_to_nx
+from moldesign.utils.conversions import convert_nx_to_smiles, convert_smiles_to_nx, convert_nx_to_dict
 
 
 def _numpy_to_tf_feature(value):
@@ -69,57 +69,6 @@ def make_type_lookup_tables(graphs: List[nx.Graph]) -> Tuple[List[int], List[str
 
     # Return as sorted lists
     return sorted(atom_types), sorted(bond_types)
-
-
-def convert_nx_to_dict(graph: nx.Graph, atom_types: List[int], bond_types: List[str]) -> dict:
-    """Convert networkx representation of a molecule to an MPNN-ready dict
-
-    Args:
-        graph: Molecule to be converted
-        atom_types: Lookup table of observed atom types
-        bond_types: Lookup table of observed bond types
-    Returns:
-        (dict) Molecule as a dict
-    """
-
-    # Get the atom types
-    atom_type = [n['atomic_num'] for _, n in graph.nodes(data=True)]
-    atom_type_id = list(map(atom_types.index, atom_type))
-
-    # Get the bond types, making the data
-    connectivity = []
-    edge_type = []
-    for a, b, d in graph.edges(data=True):
-        connectivity.append([a, b])
-        connectivity.append([b, a])
-        edge_type.append(str(d['bond_type']))
-        edge_type.append(str(d['bond_type']))
-    edge_type_id = list(map(bond_types.index, edge_type))
-
-    # Sort connectivity array by the first column
-    #  This is needed for the MPNN code to efficiently group messages for
-    #  each node when performing the message passing step
-    connectivity = np.array(connectivity)
-    if connectivity.size > 0:
-        # Skip a special case of a molecule w/o bonds
-        inds = np.lexsort((connectivity[:, 1], connectivity[:, 0]))
-        connectivity = connectivity[inds, :]
-
-        # Tensorflow's "segment_sum" will cause problems if the last atom
-        #  is not bonded because it returns an array
-        if connectivity.max() != len(atom_type) - 1:
-            smiles = convert_nx_to_smiles(graph)
-            raise ValueError(f"Problem with unconnected atoms for {smiles}")
-    else:
-        connectivity = np.zeros((0, 2))
-
-    return {
-        'n_atom': len(atom_type),
-        'n_bond': len(edge_type),
-        'atom': atom_type_id,
-        'bond': edge_type_id,
-        'connectivity': connectivity
-    }
 
 
 def parse_records(example_proto, target_name: str = 'pIC50',
