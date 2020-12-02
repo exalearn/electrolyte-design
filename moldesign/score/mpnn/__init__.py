@@ -71,11 +71,11 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
                 models.append(_model_cache[p])
         else:
             models = [tf.keras.models.load_model(p, custom_objects=custom_objects)
-                     for p in model_msg]
+                      for p in model_msg]
     else:
         # No action needed
         models = model_msg
-    
+
     # Convert all SMILES strings to batches of molecules
     # TODO (wardlt): Use multiprocessing. Could benefit from a persistent Pool to avoid loading in TF many times
     if n_jobs == 1:
