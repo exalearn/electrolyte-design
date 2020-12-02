@@ -4,9 +4,8 @@ from typing import Tuple, List
 import tensorflow as tf
 from pytest import fixture
 
-from moldesign.score.mpnn import convert_nx_to_dict
 from moldesign.score.mpnn.data import make_type_lookup_tables, make_tfrecord, make_data_loader
-from moldesign.utils.conversions import convert_smiles_to_nx
+from moldesign.utils.conversions import convert_smiles_to_nx, convert_nx_to_dict
 
 
 @fixture()
