@@ -1,0 +1,1 @@
+process_worker_pool.py  --max_workers=16 -a thetamom2 -p 0 -c 1.0 -m None --poll 10 --task_port=54557 --result_port=54439 --logdir=/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/atomization-energy-no-retrain/runs/xtb-02Dec20-182909-0cec79/run-info/000/qc --block_id=0 --hb_period=30  --hb_threshold=120 --cpu-affinity block 
