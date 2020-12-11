@@ -12,9 +12,9 @@ from scipy.stats import spearmanr, kendalltau
 import pandas as pd
 import numpy as np
 
-from molgym.mpnn.callbacks import EpochTimeLogger, LRLogger
-from molgym.mpnn.layers import GraphNetwork, Squeeze
-from molgym.mpnn.data import make_data_loader
+from moldesign.score.mpnn.callbacks import EpochTimeLogger, LRLogger
+from moldesign.score.mpnn.layers import GraphNetwork, Squeeze
+from moldesign.score.mpnn.data import make_data_loader
 
 
 def build_fn(atom_features: int = 64, message_steps: int = 8,
