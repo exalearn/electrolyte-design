@@ -2,8 +2,8 @@
 # Script for running the code with the XTB components, useful for debugging/dev work
 
 # Define the version of models to use
-moldqn_dir=../../ai-components/moldqn/xtb-atomization-v0/
-mpnn_dir=../../ai-components/mpnn/xtb-atomization-v0/
+moldqn_dir=../../ai-components/moldqn/xtb-atomization-v1/
+mpnn_dir=../../ai-components/mpnn/xtb-atomization-v1/
 
 
 models=`find $mpnn_dir -name best_model.h5 | sort | head -n 4`
