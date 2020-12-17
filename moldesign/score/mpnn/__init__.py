@@ -5,7 +5,9 @@ from typing import List, Dict, Tuple, Union, Optional
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.keras import callbacks as cb
 
+from moldesign.score.mpnn.callbacks import LRLogger, EpochTimeLogger
 from moldesign.score.mpnn.data import _merge_batch, GraphLoader
 from moldesign.score.mpnn.layers import custom_objects
 from moldesign.utils.conversions import convert_smiles_to_dict
@@ -77,7 +79,6 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
         models = model_msg
 
     # Convert all SMILES strings to batches of molecules
-    # TODO (wardlt): Use multiprocessing. Could benefit from a persistent Pool to avoid loading in TF many times
     if n_jobs == 1:
         mols = [convert_smiles_to_dict(s, atom_types, bond_types, add_hs=True) for s in smiles]
     else:
@@ -96,10 +97,11 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
     return np.hstack(all_outputs)
 
 
-# TODO (wardlt): Evaluate whether the model stays in memory after training. If so, clear graph?
+# TODO (wardlt): The number of input parameters is getting large. Consider
 def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: int,
                 atom_types: List[int], bond_types: List[str], batch_size: int = 512,
-                validation_split: float = 0.1, random_state: int = 1, learning_rate: float = 1e-3)\
+                validation_split: float = 0.1, random_state: int = 1, learning_rate: float = 1e-3,
+                patience: int = None)\
         -> Tuple[List, dict]:
     """Update a model with new training sets
 
@@ -108,24 +110,40 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
         database: Training dataset of molecule mapped to a property
         atom_types: List of known atom types
         bond_types: List of known bond types
-        num_epochs: Number of epochs to run
+        num_epochs: Maximum number of epochs to run
         batch_size: Number of molecules per training batch
         validation_split: Fraction of molecules used for the training/validation split
         random_state: Seed to the random number generator. Ensures entries do not move between train
             and validation set as the database becomes larger
         learning_rate: Learning rate for the Adam optimizer
+        patience: Number of epochs without improvement before terminating training
     Returns:
         model: Updated weights
         history: Training history
     """
 
     # Rebuild the model
-    tf.keras.backend.clear_session()
     model = model_msg.get_model()
     model.compile(tf.keras.optimizers.Adam(lr=learning_rate), 'mean_absolute_error')
 
+    # Make the callbacks
+    final_learn_rate = learning_rate / 1000
+    init_learn_rate = learning_rate
+    decay_rate = (final_learn_rate / init_learn_rate) ** (1. / (num_epochs - 1))
+
+    def lr_schedule(epoch, lr):
+        return lr * decay_rate
+    my_callbacks = [
+        LRLogger(),
+        EpochTimeLogger(),
+        cb.LearningRateScheduler(lr_schedule),
+        cb.EarlyStopping(patience=patience, restore_best_weights=True),
+        cb.TerminateOnNaN()
+    ]
+
     # Separate the database into molecules and properties
     smiles, y = zip(*database.items())
+    print(y)
 
     # Make the training and validation splits
     #  Use a random number generator with fixed seed to ensure that the validation
@@ -143,6 +161,6 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
                              batch_size=batch_size, shuffle=False)
 
     # Run the desired number of epochs
-    # TODO (wardlt): Should we use callbacks to get only the "best model" based on the validation set?
-    history = model.fit(train_loader, epochs=num_epochs, validation_data=val_loader, verbose=False)
+    history = model.fit(train_loader, epochs=num_epochs, validation_data=val_loader,
+                        verbose=False, shuffle=False, callbacks=my_callbacks)
     return [np.array(v) for v in model.get_weights()], history.history
