@@ -6,14 +6,12 @@ import sys
 import logging
 import os
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from random import sample, choice, shuffle, random
 from datetime import datetime
 from functools import partial, update_wrapper
 from queue import Queue, Empty
-from threading import Event, Lock, Thread
-from typing import List, Dict, Tuple, Optional
-from traceback import TracebackException
+from threading import Event, Lock
+from typing import List, Dict
 
 import tensorflow as tf
 from pydantic import BaseModel
@@ -369,8 +367,6 @@ if __name__ == '__main__':
                         choices=['normal_basis', 'xtb', 'small_basis'])
     parser.add_argument('--qc-parallelism', help='Degree of parallelism for QC tasks. For NWChem, number of nodes per task.'
                         ' For XTB, number of tasks per node.', default=1, type=int)
-    parser.add_argument("--parallel-guesses", default=1, type=int,
-                        help="Number of calculations to maintain in parallel")
     parser.add_argument("--parallel-updating", default=2, type=int,
                         help="Number of model retraining to perform in parallel")
     parser.add_argument("--rl-episodes", default=10, type=int,
@@ -384,6 +380,25 @@ if __name__ == '__main__':
     # Parse the arguments
     args = parser.parse_args()
     run_params = args.__dict__
+
+    # Allocate nodes to ML and QC tasks
+    nnodes = int(os.environ.get("COBALT_JOBSIZE", "1"))
+    # ML nodes: N for updating models, 1 for MolDQN, 1 for inference runs
+    ml_nodes = args.parallel_updating + 2
+    # QC nodes: Whatever remains
+    qc_nodes = nnodes - ml_nodes
+    run_params["nnodes"] = nnodes
+    run_params["ml_nodes"] = ml_nodes
+    run_params["qc_nodes"] = qc_nodes
+
+    # Determine the number of QC workers or threads per worker
+    compute_config = {'nnodes': args.qc_parallelism, 'cores_per_rank': 2}
+    if args.qc_spec == "xtb":
+        qc_workers = nnodes * args.qc_parallelism
+        compute_config["ncores"] = 64 // args.qc_parallelism
+    else:
+        qc_workers = qc_nodes // args.qc_parallelism
+    run_params["qc_workers"] = qc_workers
     
     # Load in the models, initial dataset, agent and search space
     mpnns = [
@@ -449,10 +464,12 @@ if __name__ == '__main__':
 
     # Write the configuration
     if args.qc_spec == "xtb":
-        config = theta_xtb_config(2, os.path.join(out_dir, 'run-info'), xtb_per_node=args.qc_parallelism, ml_tasks_per_node=2)
+        config = theta_xtb_config(2, os.path.join(out_dir, 'run-info'), xtb_per_node=args.qc_parallelism,
+                                  ml_tasks_per_node=2)
     else:
-        # ML nodes: N for updating models, 1 for MolDQN, 1 for inference runs
-        config = theta_nwchem_config(args.parallel_updating + 2, os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.qc_parallelism)
+
+        config = theta_nwchem_config(ml_nodes, os.path.join(out_dir, 'run-info'),
+                                     nodes_per_nwchem=args.qc_parallelism)
 
     # Save Parsl configuration
     with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
@@ -464,21 +481,18 @@ if __name__ == '__main__':
                                                     topics=['simulate', 'update', 'generate', 'rank'],
                                                     keep_inputs=False)
 
-    # Define the compute setting for the system (only relevant for NWChem)
-    compute_config = {'nnodes': args.qc_parallelism, 'cores_per_rank': 2}
-
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
     #  TODO (wardlt): Have users set the method name explicitly
     my_generate_molecules = partial(generate_molecules, episodes=args.rl_episodes)
     my_generate_molecules = update_wrapper(my_generate_molecules, generate_molecules)
 
-    my_compute_atomization = partial(compute_atomization_energy, compute_hessian=False,
+    my_compute_atomization = partial(compute_atomization_energy, compute_hessian=args.qc_spec != "xtb",
                                      qc_config=qc_spec, reference_energies=ref_energies,
                                      compute_config=compute_config, code=code)
     my_compute_atomization = update_wrapper(my_compute_atomization, compute_atomization_energy)
 
-    my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types, batch_size=1024)
+    my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types, batch_size=512)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
     my_update_mpnn = partial(update_mpnn, atom_types=atom_types, bond_types=bond_types)
@@ -498,7 +512,7 @@ if __name__ == '__main__':
                       agent,
                       mpnns,
                       output_dir=out_dir,
-                      n_parallel=args.parallel_guesses,
+                      n_parallel=qc_workers,
                       n_parallel_updating=args.parallel_updating,
                       n_molecules=args.search_size,
                       queue_length=args.queue_length,

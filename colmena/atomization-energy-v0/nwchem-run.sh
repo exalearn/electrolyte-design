@@ -13,5 +13,5 @@ python run.py --mpnn-config-directory $mpnn_dir \
     --initial-agent $moldqn_dir/agent.pkl \
     --initial-search-space $moldqn_dir/best_mols.json \
     --initial-database $mpnn_dir/initial_database.json \
-    --parallel-updating 1 \
+    --parallel-updating 2 \
     --qc-spec small_basis $@
