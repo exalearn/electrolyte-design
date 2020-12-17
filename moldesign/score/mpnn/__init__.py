@@ -116,7 +116,8 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
         random_state: Seed to the random number generator. Ensures entries do not move between train
             and validation set as the database becomes larger
         learning_rate: Learning rate for the Adam optimizer
-        patience: Number of epochs without improvement before terminating training
+        patience: Number of epochs without improvement before terminating training.
+            Default is 25% of the total number of epochs
     Returns:
         model: Updated weights
         history: Training history
@@ -130,6 +131,8 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
     final_learn_rate = learning_rate / 1000
     init_learn_rate = learning_rate
     decay_rate = (final_learn_rate / init_learn_rate) ** (1. / (num_epochs - 1))
+    if patience is None:
+        patience = num_epochs // 4
 
     def lr_schedule(epoch, lr):
         return lr * decay_rate
@@ -143,7 +146,6 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
 
     # Separate the database into molecules and properties
     smiles, y = zip(*database.items())
-    print(y)
 
     # Make the training and validation splits
     #  Use a random number generator with fixed seed to ensure that the validation
