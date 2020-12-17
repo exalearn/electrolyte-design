@@ -39,7 +39,8 @@ class Thinker(BaseThinker):
                  n_parallel_ml: int,
                  molecules_per_ml_task: int,
                  queue_length: int,
-                 sampling_fraction: Optional[float]):
+                 sampling_fraction: Optional[float],
+                 excess_ml_tasks: int):
         """
         Args:
             queues (ClientQueues): Queues to use to communicate with server
@@ -51,6 +52,8 @@ class Thinker(BaseThinker):
             n_parallel_ml (int): Maximum number of ML calculations to perform in parallel
             queue_length (int): Number of molecules to rank
             sampling_fraction (float): Fraction of search space to explore
+            excess_ml_tasks (int): Number of excess tasks to keep in queue above the 
+                number necessary to keep the ML workers
         """
         super().__init__(queues, daemon=True)
 
@@ -65,12 +68,15 @@ class Thinker(BaseThinker):
         # Attributes associated with the parallelism/problem size
         self.n_parallel_qc = n_parallel_qc
         self.molecules_per_ml_task = molecules_per_ml_task
+        
+        # Compute the number of concurrent ML tasks
+        ml_queue_length = n_parallel_ml + excess_ml_tasks
 
         # Synchronization between the threads
         self.queue_length = queue_length
         self._task_queue = Queue(maxsize=queue_length)
         self._inference_queue = Queue(maxsize=n_parallel_ml)
-        self._ml_task_pool = Semaphore(n_parallel_ml)
+        self._ml_task_pool = Semaphore(ml_queue_length)
         self._qc_task_pool = Semaphore(self.n_parallel_qc)
         self._ml_tasks_submitted = Event()
         self.n_ml_tasks = 0  # Number active
@@ -249,6 +255,9 @@ if __name__ == '__main__':
                         help="Number molecules per inference task")
     parser.add_argument("--sampling-fraction", default=None, type=float,
                         help="Fraction of search space to evaluate")
+    parser.add_argument("--ml-prefetch", default=0, help="Number of ML tasks to prefech on each node", type=int)
+    parser.add_argument("--ml-excess-queue", default=0, type=int,
+                        help="Number of tasks to keep in Colmena work queue beyond what would fill the workers.")
 
     # Parse the arguments
     args = parser.parse_args()
@@ -321,7 +330,8 @@ if __name__ == '__main__':
         config = theta_xtb_config(os.path.join(out_dir, 'run-info'), xtb_per_node=args.qc_parallelism, ml_tasks_per_node=1)
     else:
         # ML nodes: N for updating models, 1 for MolDQN, 1 for inference runs
-        config = theta_nwchem_config(os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.qc_parallelism)
+        config = theta_nwchem_config(os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.qc_parallelism,
+                                     ml_prefetch=args.ml_prefetch)
 
     # Save Parsl configuration
     with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
@@ -342,7 +352,7 @@ if __name__ == '__main__':
     my_compute_atomization = update_wrapper(my_compute_atomization, compute_atomization_energy)
 
     my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types, 
-                               batch_size=1024, n_jobs=64)
+                               batch_size=512, n_jobs=64)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
     # Create the method server and task generator
@@ -350,6 +360,9 @@ if __name__ == '__main__':
     dft_cfg = {'executors': ['qc']}
     doer = ParslMethodServer([(my_evaluate_mpnn, ml_cfg), (my_compute_atomization, dft_cfg)],
                              server_queues, config)
+    
+    # Compute the number of excess tasks
+    excess_tasks = nnodes * args.ml_prefetch + args.ml_excess_queue
 
     # Configure the "thinker" application
     thinker = Thinker(client_queues,
@@ -360,7 +373,8 @@ if __name__ == '__main__':
                       nnodes,
                       args.molecules_per_ml_task,
                       args.search_size,
-                      args.sampling_fraction)
+                      args.sampling_fraction,
+                      excess_tasks)
     logging.info('Created the method server and task generator')
 
     try:

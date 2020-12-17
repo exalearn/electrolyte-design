@@ -25,12 +25,13 @@ export MPICH_GNI_LMT_PATH=disabled
 export COMEX_MAX_NB_OUTSTANDING=6
 export LD_LIBRARY_PATH=/opt/intel/compilers_and_libraries_2018.0.128/linux/compiler/lib/intel64_lin:$LD_LIBRARY_PATH
 
-# Start the redis-server
-redis-server &> redis.out &
+#- Start the redis-server
+port=63${RANDOM::2}
+redis-server --port $port &> redis.out &
 redis=$!
 
 # Run!
-./nwc-run.sh $@
+./nwc-run.sh --redisport $port $@
 
 # Kill the redis server
 kill $redis

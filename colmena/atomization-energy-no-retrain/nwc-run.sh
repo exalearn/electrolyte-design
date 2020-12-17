@@ -11,6 +11,4 @@ python run.py --mpnn-config-directory $mpnn_dir \
     --mpnn-model-files $models \
     --search-space $search_space \
     --qc-parallelism 2 \
-    --sampling-fraction 0.01 \
-    --molecules-per-ml-task 10000 \
     --qc-spec small_basis $@
