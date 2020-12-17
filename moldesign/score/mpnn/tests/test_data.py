@@ -1,16 +1,8 @@
 """Test data"""
-from typing import Tuple, List
-
 import tensorflow as tf
-from pytest import fixture
 
 from moldesign.score.mpnn.data import make_type_lookup_tables, make_tfrecord, make_data_loader
 from moldesign.utils.conversions import convert_smiles_to_nx, convert_nx_to_dict
-
-
-@fixture()
-def dataset() -> Tuple[List[str], List[List[float]], List[float]]:
-    return ['C', 'CC'], [[1., 2.], [2., 3.]], [1., 2.]
 
 
 def test_preprocess_and_loader(tmpdir, dataset):
