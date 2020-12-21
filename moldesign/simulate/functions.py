@@ -159,10 +159,16 @@ def relax_structure(smiles: str,
         mol = Molecule.from_data({**mol.dict(), 'connectivity': conn})
 
     # Run the relaxation
+    if code == "nwchem":
+        keywords = {"driver__maxiter": 100, "set__driver:linopt": 0}
+        relax_code = "nwchem_relax"
+    else:
+        keywords = {"program": code}
+        relax_code = "geometric"
     opt_input = OptimizationInput(input_specification=qc_config,
                                   initial_molecule=mol,
-                                  keywords={'program': code})
-    res = compute_procedure(opt_input, 'geometric', local_options=compute_config, raise_error=True)
+                                  keywords=keywords)
+    res = compute_procedure(opt_input, relax_code, local_options=compute_config, raise_error=True)
 
     return res.final_molecule.to_string('xyz'), res.energies[-1], res
 
