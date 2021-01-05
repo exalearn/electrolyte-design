@@ -105,6 +105,8 @@ _reference_energies = {
                      'S': -398.103353899211,
                      'Cl': -460.134289124795}}
 
+levels = list(_reference_energies.keys())
+
 
 def get_optimization_specification(client: FractalClient, name: str) -> dict:
     """Get a specification from a hard-coded list of specifications.
