@@ -2,13 +2,12 @@ name: edw
 channels:
   - defaults
   - conda-forge
-  - psi4/label/dev
 dependencies:
 # Core dependencies for Colmena
-  - python==3.7.*
-  - scikit-learn==0.22.*
-  - redis==5.0.*
-  - redis-py==3.4.*
+  - python==3.7.9
+  - scikit-learn==0.23.2
+  - redis==5.0.3
+  - redis-py==3.4.1
   - sphinx
   - sphinx_rtd_theme
   - jupyterlab
@@ -17,20 +16,20 @@ dependencies:
   - pip
 
 # Dependencies from the molecular design app
-  - matplotlib>=3
-  - openbabel==3.0.*
+  - matplotlib==3.3.3
+  - openbabel==3.0.0
   - geometric==0.9.*
   - qcengine==0.17.*
   - rdkit==2019.09.3
-  - tensorflow==2.1.*
+  - tensorflow==2.1.0
   - qcfractal==0.14.*
-  - psi4==1.4*
   - py-cpuinfo<6
   - msgpack-python==1.*
+  - mongodb==4.0.3
+  - pymongo==3.11.2
   - sqlalchemy
   - xtb-python
   - psutil
-  - git-lfs
   - tqdm
 
 # Pip packages for all of them
@@ -40,4 +39,5 @@ dependencies:
       - pydantic
       - python-git-info
       - gym
+      - flatten-dict
       - git+https://github.com/exalearn/colmena.git

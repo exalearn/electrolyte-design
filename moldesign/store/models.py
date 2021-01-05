@@ -1,5 +1,5 @@
 """Data models for storing molecular property data"""
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Optional
 from enum import Enum
 
 from rdkit import Chem
@@ -53,30 +53,30 @@ class MoleculeData(BaseModel):
         default_factory=dict, help="Zero point energies in Ha " + _prop_desc
     )
     ip: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
-        default_factory=dict, help="Ionization potential in V for the molecule in different solvents " + _prop_desc
+        default_factory=dict, help="Ionization potential in V in different solvents " + _prop_desc
     )
     ea: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
-        default_factory=dict, help="Electron affinity in V for the molecule in different solvents " + _prop_desc
+        default_factory=dict, help="Electron affinity in V in different solvents " + _prop_desc
     )
     solvation_energy: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
         default_factory=dict, help="Solvation energy in kcal/mol for the molecule in different solvents " + _prop_desc
     )
-    atomization_energy: Dict[OxidationState, Dict[AccuracyLevel, float]] = Field(
-        default_factory=dict, help="Ionization potential in V for the molecule in different solvents " + _prop_desc
+    atomization_energy: Dict[AccuracyLevel, float] = Field(
+        default_factory=dict, help="Ionization potential in Ha at different levels of accuracies"
     )
 
     @classmethod
     def from_identifier(cls, smiles: Optional[str] = None, inchi: Optional[str] = None) -> 'MoleculeData':
         """Initialize a data record given an identifier of the molecular structure
-        
+
         You must supply exactly one of the arguments
-        
+
         TODO (wardlt): Check for undefined stereochemistry?
-        
+
         Args:
             smiles: SMILES string
             inchi: InChI string
-        Returns: 
+        Returns:
             MoleculeData record with the key set properly
         """
 
