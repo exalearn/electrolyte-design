@@ -62,6 +62,21 @@ class QCFractalWrapper:
             else:
                 raise ex
 
+    def get_molecules(self, mol_ids: List[int]) -> List[Molecule]:
+        """Lookup the molecules from the
+
+        Args:
+            mol_ids: List of molecule IDs
+        Returns:
+            Requested molecules
+        """
+        mols: List[Molecule] = []
+        for i in range(0, len(mol_ids), 1000):  # Query by 1000s
+            mols.extend(self.client.query_molecules(mol_ids[i:i + 1000]))
+        mol_lookup = dict((m.id, m) for m in mols)
+        mols = [mol_lookup[i] for i in mol_ids]
+        return mols
+
 
 class GeometryDataset(QCFractalWrapper):
     """Manager for geometry relaxations.
@@ -213,9 +228,11 @@ class GeometryDataset(QCFractalWrapper):
         # Start the new calculations!
         return self.start_compute(tag)
 
-    def get_geometries(self) -> Dict[str, Dict[str, Molecule]]:
+    def get_geometries(self, initial: bool = False) -> Dict[str, Dict[str, Molecule]]:
         """Get all completed geometries
 
+        Args:
+            initial: Whether to retrieve the initial instead of final geometries
         Returns:
             The geometries in different charge states for each molecule
         """
@@ -224,20 +241,18 @@ class GeometryDataset(QCFractalWrapper):
         records = self.get_complete_records()
 
         # Get the molecules
-        mol_ids = records.map(lambda x: x.final_molecule).tolist()
-        mols: List[Molecule] = []
-        for i in range(0, len(mol_ids), 1000):  # Query by 1000s
-            mols.extend(self.client.query_molecules(mol_ids[i:i+1000]))
-        mol_lookup = dict((m.id, m) for m in mols)
+        if initial:
+            mol_ids = records.map(lambda x: x.initial_molecule).tolist()
+        else:
+            mol_ids = records.map(lambda x: x.final_molecule).tolist()
+        mols = self.get_molecules(mol_ids)
 
         # Get all of the geometries
         output = {}
-        for name, record in records.items():
+        for (name, record), mol in zip(records.items(), mols):
             inchi, state = name.split("_")
             if inchi not in output:
                 output[inchi] = {}
-            mol = mol_lookup[record.final_molecule]
-            assert record.final_molecule == mol.id
             output[inchi][state] = mol
         return output
 
@@ -385,19 +400,14 @@ class SinglePointDataset(QCFractalWrapper):
 
         # Get the molecules
         mol_ids = records.map(lambda x: x.molecule).tolist()
-        mols: List[Molecule] = []
-        for i in range(0, len(mol_ids), 1000):  # Query by 1000s
-            mols.extend(self.client.query_molecules(mol_ids[i:i+1000]))
-        mol_lookup = dict((m.id, m) for m in mols)
+        mol_list = self.get_molecules(mol_ids)
 
         # Get all of the geometries
         output = {}
-        for name, record in records.items():
+        for (name, record), mol in zip(records.items(), mol_list):
             inchi, state = name.split("_")
             if inchi not in output:
                 output[inchi] = {}
-            mol = mol_lookup[record.molecule]
-            assert record.molecule == mol.id
             output[inchi][state] = mol
         return output
 
