@@ -26,6 +26,7 @@ def init_db(db) -> MoleculePropertyDB:
 def sample_record() -> MoleculeData:
     md = MoleculeData.from_identifier('C')
     md.atomization_energy['small_basis'] = -1
+    md.subsets.append('pytest')
     return md
 
 
@@ -37,9 +38,10 @@ def sample_db(init_db, sample_record) -> MoleculePropertyDB:
 
 def test_generate_update(sample_record):
     update = generate_update(sample_record)
-    assert len(update) == 1
+    assert len(update) == 2
     assert update['$set']['atomization_energy.small_basis'] == -1
     assert update['$set']['identifiers.smiles'] == "C"
+    assert update['$addToSet']['subsets'] == {"$each": ['pytest']}
 
 
 def test_initialize(db):
@@ -68,3 +70,10 @@ def test_eligible_molecules(sample_db):
     records = sample_db.get_eligible_molecules(['identifiers.inchi', 'atomization_energy.small_basis'],
                                                ['atomization_energy.g4mp2'])
     assert records['atomization_energy.small_basis'] == [-1]
+
+
+def test_get_record(sample_db):
+    record = sample_db.get_molecule_record(smiles='C')
+    assert record is not None
+    assert record.subsets == ["pytest"]
+    assert record.identifiers["smiles"] == "C"

@@ -1,6 +1,7 @@
 """Thin wrapper over MongoDB"""
 from typing import List, Tuple, Dict, Any, Set, Optional
 
+from pymongo import MongoClient
 from pymongo.collection import Collection, UpdateResult
 from flatten_dict import flatten
 
@@ -14,15 +15,35 @@ def generate_update(moldata: MoleculeData) -> Dict[str, Dict[str, Any]]:
         A dictionary ready for the "update_one" command
     """
 
-    set_fields = flatten(moldata.dict(exclude_defaults=True, exclude={'key'}), 'dot')
-    return {'$set': set_fields}
+    # Mark all of the fields that get "set"/overwritten
+    set_fields = flatten(moldata.dict(exclude_defaults=True, exclude={'key', 'subsets'}), 'dot')
+    output = {'$set': set_fields}
+
+    # Mark all of the fields that get appended to
+    extend_fields = flatten(moldata.dict(exclude_defaults=True, include={'subsets'}), 'dot')
+    for key, value in extend_fields.items():
+        if len(value) > 0:
+            output['$addToSet'] = {key: {"$each": value}}
+
+    return output
 
 
 class MoleculePropertyDB:
     """Wrapper for a MongoDB holding molecular property data"""
 
     def __init__(self, collection: Collection):
+        """
+        Args:
+            collection: Collection of molecule property documents
+        """
         self.collection = collection
+
+    @classmethod
+    def from_connection_info(cls, hostname: str = "localhost", port: Optional[int] = None,
+                             database: str = "edw", collection: str = "molecules", **kwargs):
+        client = MongoClient(hostname, port=port, **kwargs)
+        db = client.get_database(database)
+        return MoleculePropertyDB(db.get_collection(collection))
 
     def initialize_index(self):
         """Prepare a new collection.
@@ -111,6 +132,30 @@ class MoleculePropertyDB:
     def get_molecules(self, match: Optional[Dict] = None, output_key: str = 'identifiers.inchi') -> Set[str]:
         """Get all of the molecules in that match a certain query
 
-        Returns a query of all of their object"""
+        Returns a query of all of their object
+
+        Args:
+            match: Query used to filter down molecules
+            output_key: Which field from the records to output
+        Returns:
+            Set of all of the unique values of that field
+        """
 
         return set(self.collection.distinct(output_key, filter=match))
+
+    def get_molecule_record(self, key: Optional[str] = None, smiles: Optional[str] = None, inchi: Optional[str] = None,
+                            **kwargs) -> Optional[MoleculeData]:
+        """Get a record for a certain recorded"""
+
+        # Make the query
+        query = {}
+        if key is not None:
+            query['key'] = key
+        for tag, value in [('smiles', smiles), ('inchi', inchi)]:
+            if value is not None:
+                query[f'identifiers.{tag}'] = value
+
+        # Return a document
+        record = self.collection.find_one(query, **kwargs)
+        if record is not None:
+            return MoleculeData.parse_obj(record)

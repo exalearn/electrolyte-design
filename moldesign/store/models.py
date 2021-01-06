@@ -1,5 +1,6 @@
 """Data models for storing molecular property data"""
 from typing import Dict, List, Optional
+from collections import defaultdict
 from enum import Enum
 
 from rdkit import Chem
@@ -38,33 +39,35 @@ class MoleculeData(BaseModel):
 
     # Computed properties of the molecule
     geometries: Dict[OxidationState, Dict[AccuracyLevel, Molecule]] = Field(
-        default_factory=dict, help="Relaxed geometries " + _prop_desc
+        default_factory=lambda: defaultdict(dict), help="Relaxed geometries " + _prop_desc
     )
     total_energies: Dict[OxidationState, Dict[AccuracyLevel, float]] = Field(
-        default_factory=dict, help="Total energy in Ha " + _prop_desc
+        default_factory=lambda: defaultdict(dict), help="Total energy in Ha " + _prop_desc
     )
     vibrational_modes: Dict[OxidationState, Dict[AccuracyLevel, List[float]]] = Field(
-        default_factory=dict, help="Vibrational frequencies in Hz " + _prop_desc
+        default_factory=lambda: defaultdict(dict), help="Vibrational frequencies in Hz " + _prop_desc
     )
     total_energies_in_solvents: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
-        default_factory=dict, help="Total energy in Ha in different solvents " + _prop_desc
+        default_factory=lambda: defaultdict(dict), help="Total energy in Ha in different solvents " + _prop_desc
     )
 
     # Properties derived from the base computations
     zpes: Dict[OxidationState, Dict[AccuracyLevel, float]] = Field(
-        default_factory=dict, help="Zero point energies in Ha " + _prop_desc
+        default_factory=lambda: defaultdict(dict), help="Zero point energies in Ha " + _prop_desc
     )
     ip: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
-        default_factory=dict, help="Ionization potential in V in different solvents " + _prop_desc
+        default_factory=lambda: defaultdict(dict),
+        help="Ionization potential in V in different solvents " + _prop_desc
     )
     ea: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
-        default_factory=dict, help="Electron affinity in V in different solvents " + _prop_desc
+        default_factory=lambda: defaultdict(dict), help="Electron affinity in V in different solvents " + _prop_desc
     )
     solvation_energy: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
-        default_factory=dict, help="Solvation energy in kcal/mol for the molecule in different solvents " + _prop_desc
+        default_factory=lambda: defaultdict(dict),
+        help="Solvation energy in kcal/mol for the molecule in different solvents " + _prop_desc
     )
     atomization_energy: Dict[AccuracyLevel, float] = Field(
-        default_factory=dict, help="Ionization potential in Ha at different levels of accuracies"
+        default_factory=lambda: defaultdict(dict), help="Ionization potential in Ha at different levels of accuracies"
     )
 
     @classmethod

@@ -3,6 +3,7 @@ from typing import List
 import numpy as np
 import networkx as nx
 from rdkit import Chem
+from openbabel import pybel
 
 
 def convert_rdkit_to_nx(mol: Chem.Mol) -> nx.Graph:
