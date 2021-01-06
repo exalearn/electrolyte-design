@@ -112,19 +112,28 @@ def compute_atomization_energy(smiles: str, qc_config: QCInputSpecification,
     return subtract_reference_energies(total_energy, mol, reference_energies), relax_result, hess_result
 
 
-def subtract_reference_energies(total_energy: float, mol: Molecule, reference_energies: Dict[str, float]) -> float:
+def subtract_reference_energies(total_energy: float, mol: Union[Molecule, Chem.Mol],
+                                reference_energies: Dict[str, float]) -> float:
     """Compute the atomization energy by subtracting off reference energies
 
     Args:
         total_energy (float): Total energy of a molecule
-        mol (Molecule): Molecule of interest
+        mol: Molecule of interest
         reference_energies (float): Isolated atom energies in the same units as total_energy
     Returns:
         (float) Atomization energy
     """
-    # Get the energy of the relaxed structure
+    # Get the elements
+    if isinstance(mol, Molecule):
+        symbols = mol.symbols
+    elif isinstance(mol, Chem.Mol):
+        symbols = [x.GetSymbol() for x in mol.GetAtoms()]
+    else:
+        raise ValueError(f'Unrecognized format: {type(mol)}')
+
+    # Subtract off the reference energies
     atom_energy = total_energy
-    for label in mol.symbols:
+    for label in symbols:
         atom_energy -= reference_energies[label]
 
     # Get the output energy

@@ -1,4 +1,5 @@
 import logging
+from typing import List
 
 from qcelemental.models import Molecule
 from qcelemental.physical_constants import constants
@@ -51,14 +52,32 @@ def compute_frequencies(hessian: np.ndarray, molecule: Molecule,
     eig = np.linalg.eigvals(mass_hessian)
     freq = np.sign(eig) * np.sqrt(np.abs(eig))
     conv = np.sqrt(constants.conversion_factor(f'{units} / amu', 'Hz ** 2'))
-    freq *= conv / np.pi / 2  # Converts from angular to ordinary frequency too
+    freq *= conv / np.pi / 2  # Converts from angular to ordinary frequency
     return freq
+
+
+def compute_wavenumbers(hessian: np.ndarray, molecule: Molecule,
+                        units: str = 'hartree / bohr ** 2') -> np.array:
+    """Compute the wavenumbers for vibrations in the molecule
+
+    Args:
+        hessian: Hessian matrix
+        molecule: Molecule object
+        units: Units for the Hessian matrix
+    Returns:
+        ([float]): List of vibrational wavenumbers in 1/cm"""
+
+    # Compute the vibrational frequencies
+    freq = compute_frequencies(hessian, molecule, units)
+    freq = constants.ureg.Quantity(freq, 'Hz')
+
+    return (freq / c).to("1 / cm").magnitude
 
 
 def compute_zpe(hessian: np.ndarray, molecule: Molecule,
                 scaling: float = 1, units: str = 'hartree / bohr ** 2',
                 verbose: bool = False) -> float:
-    """Compute the characteristic temperature of vibrational frequencies for a molecule
+    """Compute the zero-point energy of a molecule
 
     Args:
         hessian: Hessian matrix
@@ -74,6 +93,27 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
     freqs = compute_frequencies(hessian, molecule, units)
     freqs = constants.ureg.Quantity(freqs, 'Hz')
 
+    # Get the name of the molecule
+    name = molecule.name
+
+    return compute_zpe_from_freqs(freqs, scaling, verbose, name)
+
+
+def compute_zpe_from_freqs(freqs: List[float], scaling: float = 1, verbose: bool = False, name: str = "Molecule"):
+    """Compute the zero-point energy of a molecule
+
+    Args:
+        freqs: Frequencies in Hz
+        scaling: How much to scale frequencies before computing ZPE
+        verbose: Whether to display warnings about negative frequencies
+        name: Name of the molecule, used when displaying warnings
+    Returns:
+        (float) Energy for the system in Hartree
+    """
+
+    # Make sure they are an ndarray
+    freqs = constants.ureg.Quantity(freqs, "Hz")
+
     # Scale them
     freqs *= scaling
 
@@ -87,7 +127,7 @@ def compute_zpe(hessian: np.ndarray, molecule: Molecule,
         if len(wavenumbers) > 0:
             output = ' '.join(f'{x:.2f}' for x in wavenumbers.to("1/cm").magnitude)
             if verbose:
-                logger.warning(f'{molecule.name} has {len(neg_freqs)} negative components. Largest: [{output}] cm^-1')
+                logger.warning(f'{name} has {len(neg_freqs)} negative components. Largest: [{output}] cm^-1')
 
     #  Convert the frequencies to characteristic temps
     freqs = constants.ureg.Quantity(freqs, 'Hz')

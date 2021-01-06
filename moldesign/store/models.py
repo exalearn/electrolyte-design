@@ -6,7 +6,9 @@ from rdkit import Chem
 from pydantic import BaseModel, Field
 from qcelemental.models import Molecule
 
-from moldesign.simulate.specs import levels
+from moldesign.simulate.functions import subtract_reference_energies
+from moldesign.simulate.specs import levels, lookup_reference_energies
+from moldesign.simulate.thermo import compute_zpe_from_freqs
 
 
 class OxidationState(str, Enum):
@@ -42,7 +44,7 @@ class MoleculeData(BaseModel):
         default_factory=dict, help="Total energy in Ha " + _prop_desc
     )
     vibrational_modes: Dict[OxidationState, Dict[AccuracyLevel, List[float]]] = Field(
-        default_factory=dict, help="Vibrational temperatures in K " + _prop_desc
+        default_factory=dict, help="Vibrational frequencies in Hz " + _prop_desc
     )
     total_energies_in_solvents: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
         default_factory=dict, help="Total energy in Ha in different solvents " + _prop_desc
@@ -98,4 +100,68 @@ class MoleculeData(BaseModel):
         if mol is None:
             raise ValueError('Identifier did not parse correctly')
         key = Chem.MolToInchiKey(mol)
-        return MoleculeData(key=key, identifiers=iden)
+
+        # Output the molecule with all identifiers set
+        output = MoleculeData(key=key, identifiers=iden)
+        output.add_all_identifiers()
+        return output
+
+    @property
+    def mol(self) -> Chem.Mol:
+        """Access the molecule as an RDKit object"""
+        if 'smiles' in self.identifiers:
+            return Chem.MolFromSmiles(self.identifiers['smiles'])
+        elif 'inchi' in self.identifiers:
+            return Chem.MolFromInchi(self.identifiers['inchi'])
+        else:
+            raise ValueError('No identifiers are compatible with RDKit')
+
+    def add_all_identifiers(self):
+        """Set all possible identifiers for a molecule"""
+
+        # Get the data as a molecule
+        mol = self.mol
+
+        # Set the fields
+        for name, func in [('smiles', Chem.MolToSmiles), ('inchi', Chem.MolToInchi)]:
+            if name not in self.identifiers:
+                self.identifiers[name] = func(mol)
+
+    def update_thermochem(self):
+        """Compute the thermochemical properties, if possible
+
+        Used to make any derived thermochemical properties, such as IP or atomization energy,
+        are up-to-date in the database"""
+
+        self.update_zpes()
+        self.update_atomization_energies()
+
+    def update_zpes(self):
+        """Compute the zero-point energies from vibrational temperatures, if not already computed"""
+
+        for state, freq_dict in self.vibrational_modes.items():
+            # Add the dictionary, if needed
+            if state not in self.zpes:
+                self.zpes[state] = {}
+
+            # Compute the ZPE, if needed
+            for acc, freqs in freq_dict.items():
+                if acc not in self.zpes[state]:
+                    self.zpes[state][acc] = compute_zpe_from_freqs(freqs, verbose=True, name=self.key)
+
+    def update_atomization_energies(self):
+        """Compute atomization energy given total energies, if not already completed"""
+
+        # Check that we have some ZPEs or total energies for neutral molecules
+        if OxidationState.NEUTRAL not in self.total_energies or \
+           OxidationState.NEUTRAL not in self.zpes:
+            return
+
+        # Get my molecule with hydrogens!
+        mol = Chem.AddHs(self.mol)
+
+        for acc, elect_eng in self.total_energies[OxidationState.NEUTRAL].items():
+            if acc in self.zpes[OxidationState.NEUTRAL] and acc not in self.atomization_energy:
+                zpe = self.zpes[OxidationState.NEUTRAL][acc]
+                atom = subtract_reference_energies(elect_eng + zpe, mol, lookup_reference_energies(acc))
+                self.atomization_energy[acc] = atom

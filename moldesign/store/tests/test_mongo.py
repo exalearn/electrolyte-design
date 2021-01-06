@@ -11,6 +11,7 @@ def db() -> MoleculePropertyDB:
     client = MongoClient()
     db = client['edw-pytest']
     yield MoleculePropertyDB(db['molecules'])
+    db.drop_collection('molecules')
     client.drop_database('edw-pytest')
 
 
@@ -28,10 +29,17 @@ def sample_record() -> MoleculeData:
     return md
 
 
+@fixture
+def sample_db(init_db, sample_record) -> MoleculePropertyDB:
+    init_db.update_molecule(sample_record)
+    return init_db
+
+
 def test_generate_update(sample_record):
-    assert generate_update(sample_record) == {
-        '$set': {'atomization_energy.small_basis': -1, 'identifiers.smiles': 'C', 'subsets': []}
-    }
+    update = generate_update(sample_record)
+    assert len(update) == 1
+    assert update['$set']['atomization_energy.small_basis'] == -1
+    assert update['$set']['identifiers.smiles'] == "C"
 
 
 def test_initialize(db):
@@ -45,3 +53,18 @@ def test_training_set(init_db, sample_record):
     inputs, outputs = init_db.get_training_set(['identifiers.smiles'],
                                                ['atomization_energy.small_basis'])
     assert inputs == {'identifiers.smiles': ['C']}
+    assert outputs == {'atomization_energy.small_basis': [-1]}
+
+
+def test_retrieve_molecules(sample_db):
+    assert sample_db.get_molecules() == {'InChI=1S/CH4/h1H4'}
+
+
+def test_eligible_molecules(sample_db):
+    records = sample_db.get_eligible_molecules(['identifiers.smiles'], ['atomization_energy.g4mp2'])
+    assert len(records['key']) == 1
+    assert records['identifiers.smiles'] == ['C']
+
+    records = sample_db.get_eligible_molecules(['identifiers.inchi', 'atomization_energy.small_basis'],
+                                               ['atomization_energy.g4mp2'])
+    assert records['atomization_energy.small_basis'] == [-1]

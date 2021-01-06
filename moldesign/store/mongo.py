@@ -1,5 +1,5 @@
 """Thin wrapper over MongoDB"""
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Set, Optional
 
 from pymongo.collection import Collection, UpdateResult
 from flatten_dict import flatten
@@ -38,6 +38,7 @@ class MoleculePropertyDB:
 
         Args:
             input_fields: List of fields that must exist
+            output_fields: Which fields to produce in the output fields
         Returns:
             - Input data: Keys are the requested input fields and values are the values for each matching molecule
             - Output data: Keys are the requested output fields and values are the values for each matching molecule
@@ -60,6 +61,39 @@ class MoleculePropertyDB:
 
         return inputs, outputs
 
+    def get_eligible_molecules(self, input_fields: List[str], output_fields: List[str]) \
+            -> Dict[str, List[Any]]:
+        """Gather molecules which are eligible for running a certain computation
+
+        Determines eligibility if certain input_fields are populated and the
+        output fields _are not set_.
+
+        Args:
+            input_fields: List of fields that must exist
+            output_fields: Which fields must not exist
+        Returns:
+            A dictionary with keys of each input field. This will always include "identifiers.inchi" and "key"
+        """
+
+        # Get the "exists" query fields
+        must_exist = input_fields + ['identifiers.inchi', 'key']
+
+        # Build the query
+        query = dict((v, {'$exists': True}) for v in must_exist)
+        for f in output_fields:
+            query[f] = {'$exists': False}
+
+        # Run the query
+        cursor = self.collection.find(query, must_exist)
+
+        # Gather the inputs
+        inputs = dict((v, []) for v in must_exist)
+        for record in cursor:
+            record = flatten(record, 'dot')
+            for i in must_exist:
+                inputs[i].append(record[i])
+        return inputs
+
     def update_molecule(self, molecule: MoleculeData) -> UpdateResult:
         """Update the data for a single molecule
 
@@ -70,5 +104,13 @@ class MoleculePropertyDB:
         Returns:
             An update result
         """
+        molecule.update_thermochem()  # Ensure all derived fields are computed, if available
         update_record = generate_update(molecule)
         return self.collection.update_one({'key': molecule.key}, update_record, upsert=True)
+
+    def get_molecules(self, match: Optional[Dict] = None, output_key: str = 'identifiers.inchi') -> Set[str]:
+        """Get all of the molecules in that match a certain query
+
+        Returns a query of all of their object"""
+
+        return set(self.collection.distinct(output_key, filter=match))
