@@ -40,21 +40,20 @@ def test_generate_update(sample_record):
     update = generate_update(sample_record)
     assert len(update) == 2
     assert update['$set']['atomization_energy.small_basis'] == -1
-    assert update['$set']['identifiers.smiles'] == "C"
+    assert update['$set']['identifier.smiles'] == "C"
     assert update['$addToSet']['subsets'] == {"$each": ['pytest']}
 
 
 def test_initialize(db):
     db.initialize_index()
-    assert db.collection.index_information()['key_1'] == {'v': 2, 'unique': True, 'key': [('key', 1)],
-                                                          'ns': 'edw-pytest.molecules'}
+    assert db.collection.index_information()['key_1']['unique']
 
 
 def test_training_set(init_db, sample_record):
     init_db.update_molecule(sample_record)
-    inputs, outputs = init_db.get_training_set(['identifiers.smiles'],
+    inputs, outputs = init_db.get_training_set(['identifier.smiles'],
                                                ['atomization_energy.small_basis'])
-    assert inputs == {'identifiers.smiles': ['C']}
+    assert inputs == {'identifier.smiles': ['C']}
     assert outputs == {'atomization_energy.small_basis': [-1]}
 
 
@@ -63,20 +62,20 @@ def test_retrieve_molecules(sample_db):
 
 
 def test_eligible_molecules(sample_db):
-    records = sample_db.get_eligible_molecules(['identifiers.smiles'], ['atomization_energy.g4mp2'])
+    records = sample_db.get_eligible_molecules(['identifier.smiles'], ['atomization_energy.g4mp2'])
     assert len(records['key']) == 1
-    assert records['identifiers.smiles'] == ['C']
+    assert records['identifier.smiles'] == ['C']
 
-    records = sample_db.get_eligible_molecules(['identifiers.inchi', 'atomization_energy.small_basis'],
+    records = sample_db.get_eligible_molecules(['identifier.inchi', 'atomization_energy.small_basis'],
                                                ['atomization_energy.g4mp2'])
     assert records['atomization_energy.small_basis'] == [-1]
 
 
 def test_get_record(sample_db):
-    record = sample_db.get_molecule_record(smiles='C', projection=["identifiers.smiles", "key", "subsets"])
+    record = sample_db.get_molecule_record(smiles='C', projection=["identifier.smiles", "key", "subsets"])
     assert record is not None
     assert record.subsets == ["pytest"]
-    assert record.identifiers["smiles"] == "C"
+    assert record.identifier["smiles"] == "C"
 
     record = sample_db.get_molecule_record(smiles='CC')
     assert record is not None

@@ -93,11 +93,11 @@ class MoleculePropertyDB:
             input_fields: List of fields that must exist
             output_fields: Which fields must not exist
         Returns:
-            A dictionary with keys of each input field. This will always include "identifiers.inchi" and "key"
+            A dictionary with keys of each input field. This will always include "identifier.inchi" and "key"
         """
 
         # Get the "exists" query fields
-        must_exist = input_fields + ['identifiers.inchi', 'key']
+        must_exist = input_fields + ['identifier.inchi', 'key']
 
         # Build the query
         query = dict((v, {'$exists': True}) for v in must_exist)
@@ -130,7 +130,7 @@ class MoleculePropertyDB:
         update_record = generate_update(molecule)
         return self.collection.update_one({'key': molecule.key}, update_record, upsert=True)
 
-    def get_molecules(self, match: Optional[Dict] = None, output_key: str = 'identifiers.inchi') -> Set[str]:
+    def get_molecules(self, match: Optional[Dict] = None, output_key: str = 'identifier.inchi') -> Set[str]:
         """Get all of the molecules in that match a certain query
 
         Returns a query of all of their object
@@ -162,7 +162,7 @@ class MoleculePropertyDB:
             query['key'] = key
         for tag, value in [('smiles', smiles), ('inchi', inchi)]:
             if value is not None:
-                query[f'identifiers.{tag}'] = value
+                query[f'identifier.{tag}'] = value
 
         # Return a document
         record = self.collection.find_one(query, **kwargs)

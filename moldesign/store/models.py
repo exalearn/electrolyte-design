@@ -29,29 +29,29 @@ class MoleculeData(BaseModel):
 
     # Describing the molecule
     key: str = Field(..., help="InChI key of the molecule. Used as a database key")
-    identifiers: Dict[str, str] = Field(default_factory=dict, help="Different identifiers for the molecule,"
-                                                                   " such as a SMILES string or CAS number")
+    identifier: Dict[str, str] = Field(default_factory=dict, help="Different identifiers for the molecule,"
+                                                                  " such as a SMILES string or CAS number")
     subsets: List[str] = Field(default_factory=list, help="Names of different subsets in which this molecule belongs")
 
     # Cross-references to other databases
     qcfractal: Dict[str, int] = Field(default_factory=dict, help='References to QCFractal records for this molecule')
 
     # Computed properties of the molecule
-    geometries: Dict[OxidationState, Dict[str, str]] = Field(
+    geometry: Dict[OxidationState, Dict[str, str]] = Field(
         default_factory=dict, help="Relaxed geometries " + _prop_desc
     )
-    total_energies: Dict[OxidationState, Dict[str, float]] = Field(
+    total_energy: Dict[OxidationState, Dict[str, float]] = Field(
         default_factory=dict, help="Electronic energy in Ha " + _prop_desc
     )
     vibrational_modes: Dict[OxidationState, Dict[str, List[float]]] = Field(
         default_factory=dict, help="Vibrational frequencies in Hz " + _prop_desc
     )
-    total_energies_in_solvents: Dict[str, Dict[OxidationState, Dict[str, float]]] = Field(
+    total_energy_in_solvent: Dict[str, Dict[OxidationState, Dict[str, float]]] = Field(
         default_factory=dict, help="Electronic energy in Ha in different solvents " + _prop_desc
     )
 
     # Properties derived from the base computations
-    zpes: Dict[OxidationState, Dict[str, float]] = Field(
+    zpe: Dict[OxidationState, Dict[str, float]] = Field(
         default_factory=dict, help="Zero point energies in Ha " + _prop_desc
     )
     ip: Dict[str, Dict[str, float]] = Field(
@@ -104,17 +104,17 @@ class MoleculeData(BaseModel):
         key = Chem.MolToInchiKey(mol)
 
         # Output the molecule with all identifiers set
-        output = MoleculeData(key=key, identifiers=iden)
+        output = MoleculeData(key=key, identifier=iden)
         output.add_all_identifiers()
         return output
 
     @property
     def mol(self) -> Chem.Mol:
         """Access the molecule as an RDKit object"""
-        if 'smiles' in self.identifiers:
-            return Chem.MolFromSmiles(self.identifiers['smiles'])
-        elif 'inchi' in self.identifiers:
-            return Chem.MolFromInchi(self.identifiers['inchi'])
+        if 'smiles' in self.identifier:
+            return Chem.MolFromSmiles(self.identifier['smiles'])
+        elif 'inchi' in self.identifier:
+            return Chem.MolFromInchi(self.identifier['inchi'])
         else:
             raise ValueError('No identifiers are compatible with RDKit')
 
@@ -126,8 +126,8 @@ class MoleculeData(BaseModel):
 
         # Set the fields
         for name, func in [('smiles', Chem.MolToSmiles), ('inchi', Chem.MolToInchi)]:
-            if name not in self.identifiers:
-                self.identifiers[name] = func(mol)
+            if name not in self.identifier:
+                self.identifier[name] = func(mol)
 
     def update_thermochem(self, verbose: bool = False):
         """Compute the thermochemical properties, if possible
@@ -148,28 +148,28 @@ class MoleculeData(BaseModel):
 
         for state, freq_dict in self.vibrational_modes.items():
             # Add the dictionary, if needed
-            if state not in self.zpes:
-                self.zpes[state] = {}
+            if state not in self.zpe:
+                self.zpe[state] = {}
 
             # Compute the ZPE, if needed
             for acc, freqs in freq_dict.items():
-                if acc not in self.zpes[state]:
-                    self.zpes[state][acc] = compute_zpe_from_freqs(freqs, verbose=verbose, name=self.key)
+                if acc not in self.zpe[state]:
+                    self.zpe[state][acc] = compute_zpe_from_freqs(freqs, verbose=verbose, name=self.key)
 
     def update_atomization_energies(self):
         """Compute atomization energy given total energies, if not already completed"""
 
         # Check that we have some ZPEs or total energies for neutral molecules
-        if OxidationState.NEUTRAL not in self.total_energies:
+        if OxidationState.NEUTRAL not in self.total_energy:
             return
 
         # Get my molecule with hydrogens!
         mol = Chem.AddHs(self.mol)
 
         # Compute both with and without vibrational contributions
-        for acc, elect_eng in self.total_energies[OxidationState.NEUTRAL].items():
-            if acc in self.zpes.get(OxidationState.NEUTRAL, {}) and acc not in self.atomization_energy:
-                zpe = self.zpes[OxidationState.NEUTRAL][acc]
+        for acc, elect_eng in self.total_energy[OxidationState.NEUTRAL].items():
+            if acc in self.zpe.get(OxidationState.NEUTRAL, {}) and acc not in self.atomization_energy:
+                zpe = self.zpe[OxidationState.NEUTRAL][acc]
                 atom = subtract_reference_energies(elect_eng + zpe, mol, lookup_reference_energies(acc))
                 self.atomization_energy[acc] = atom
             if acc + '-no_zpe' not in self.atomization_energy:
@@ -180,10 +180,10 @@ class MoleculeData(BaseModel):
         """Compute redox properties, if not already completed"""
 
         # Store the neutral energies and neutral ZPEs
-        if OxidationState.NEUTRAL not in self.total_energies:
+        if OxidationState.NEUTRAL not in self.total_energy:
             return
-        neutral_energies = self.total_energies[OxidationState.NEUTRAL]
-        neutral_zpes = self.zpes.get(OxidationState.NEUTRAL, {})
+        neutral_energies = self.total_energy[OxidationState.NEUTRAL]
+        neutral_zpes = self.zpe.get(OxidationState.NEUTRAL, {})
 
         # Compute them in vacuum
         for state, redox_dict in zip([OxidationState.REDUCED, OxidationState.OXIDIZED], [self.ea, self.ip]):
@@ -193,10 +193,10 @@ class MoleculeData(BaseModel):
             output = redox_dict['vacuum']
 
             # Get the charged energy and ZPE
-            if state not in self.total_energies:
+            if state not in self.total_energy:
                 continue
-            charged_energies = self.total_energies[state]
-            charged_zpes = self.zpes.get(state, {})
+            charged_energies = self.total_energy[state]
+            charged_zpes = self.zpe.get(state, {})
             p = -1 if state == OxidationState.REDUCED else 1
 
             # Compute the redox without vibrational contributions

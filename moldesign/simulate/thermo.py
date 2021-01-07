@@ -1,3 +1,5 @@
+"""Thermodynamic functions"""
+
 import logging
 from typing import List
 
