@@ -73,7 +73,10 @@ def test_eligible_molecules(sample_db):
 
 
 def test_get_record(sample_db):
-    record = sample_db.get_molecule_record(smiles='C')
+    record = sample_db.get_molecule_record(smiles='C', projection=["identifiers.smiles", "key", "subsets"])
     assert record is not None
     assert record.subsets == ["pytest"]
     assert record.identifiers["smiles"] == "C"
+
+    record = sample_db.get_molecule_record(smiles='CC')
+    assert record is not None

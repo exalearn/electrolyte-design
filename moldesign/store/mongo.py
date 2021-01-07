@@ -125,6 +125,7 @@ class MoleculePropertyDB:
         Returns:
             An update result
         """
+        MoleculeData.validate(molecule)
         molecule.update_thermochem()  # Ensure all derived fields are computed, if available
         update_record = generate_update(molecule)
         return self.collection.update_one({'key': molecule.key}, update_record, upsert=True)
@@ -145,7 +146,15 @@ class MoleculePropertyDB:
 
     def get_molecule_record(self, key: Optional[str] = None, smiles: Optional[str] = None, inchi: Optional[str] = None,
                             **kwargs) -> Optional[MoleculeData]:
-        """Get a record for a certain recorded"""
+        """Get a record for a certain molecule
+
+        Args:
+            key: InChI key
+            smiles: SMILES string (not, not a unique identifier!)
+            inchi: InChI string (we store molecules with the stereochemistry block)
+        Returns:
+            All requested data for the molecule, if in database. Generates a fresh record if not available
+        """
 
         # Make the query
         query = {}
@@ -159,3 +168,8 @@ class MoleculePropertyDB:
         record = self.collection.find_one(query, **kwargs)
         if record is not None:
             return MoleculeData.parse_obj(record)
+
+        # Make a fresh document
+        if key is not None:
+            return MoleculeData(key=key)
+        return MoleculeData.from_identifier(**{'inchi': inchi, 'smiles': smiles})
