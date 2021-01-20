@@ -1,13 +1,21 @@
 """Converting between different descriptions of molecules"""
 
 from typing import List
+import logging
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import networkx as nx
-from rdkit import Chem
+
+try:
+    from rdkit import Chem
+except ImportError:
+    logger.warning('RDKit not installed. Some conversion functions will nto work')
+    Chem = None
 
 
-def convert_rdkit_to_nx(mol: Chem.Mol) -> nx.Graph:
+def convert_rdkit_to_nx(mol: 'Chem.Mol') -> nx.Graph:
     """Convert a networkx graph to a RDKit Molecule
 
     Args:
@@ -33,7 +41,7 @@ def convert_rdkit_to_nx(mol: Chem.Mol) -> nx.Graph:
     return graph
 
 
-def convert_nx_to_rdkit(graph: nx.Graph) -> Chem.Mol:
+def convert_nx_to_rdkit(graph: nx.Graph) -> 'Chem.Mol':
     """Convert a networkx graph to a RDKit Molecule
 
     Args:
