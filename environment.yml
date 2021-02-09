@@ -41,3 +41,4 @@ dependencies:
       - gym
       - flatten-dict
       - git+https://github.com/exalearn/colmena.git
+      - git+https://github.com/qmlcode/qml.git@develop
