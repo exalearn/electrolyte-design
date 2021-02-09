@@ -35,3 +35,17 @@ def test_train_and_run(model, training_set, n_jobs):
     model = train_fchl(rep, model, xyzs, ys, n_jobs=n_jobs)
     preds = evaluate_fchl(rep, model, xyzs, n_jobs=n_jobs)
     assert np.isclose(preds, ys).all()
+
+
+def test_train_and_run_delta(model, training_set):
+    # Unpack the inputs
+    rep, model = model
+    xyzs, ys = training_set
+
+    # Make a delta learning model and lower-fidelity data
+    y_lower = np.subtract(ys, 0.1)
+
+    # Fit the model
+    model = train_fchl(rep, model, xyzs, ys, y_lower=y_lower)
+    preds = evaluate_fchl(rep, model, xyzs, y_lower=y_lower)
+    assert np.isclose(preds, ys).all()

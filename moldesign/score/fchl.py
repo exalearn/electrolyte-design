@@ -61,7 +61,7 @@ class FCHLKernel(BaseEstimator):
 
 
 def evaluate_fchl(rep_computer: FCHLRepresentation, model: BaseEstimator,
-                  mols: List[str], n_jobs: int = 1) -> List[float]:
+                  mols: List[str], n_jobs: int = 1, y_lower: List[float] = None) -> np.ndarray:
     """Run an FCHL-based model
 
     Args:
@@ -69,6 +69,7 @@ def evaluate_fchl(rep_computer: FCHLRepresentation, model: BaseEstimator,
         model: Model to be evaluated
         mols: List of molecules (XYZ format) to evaluate
         n_jobs: Number of threads to use for generating representations
+        y_lower: Lower-fidelity estimate of the property. Used for delta learning models
     Returns:
         Results from the inference
     """
@@ -78,11 +79,14 @@ def evaluate_fchl(rep_computer: FCHLRepresentation, model: BaseEstimator,
     reps = rep_computer.transform(mols)
 
     # Run the model
-    return model.predict(reps).tolist()
+    y_pred = model.predict(reps).tolist()
+    if y_lower is not None:
+        y_pred = np.add(y_pred, y_lower)
+    return y_pred
 
 
 def train_fchl(rep_computer: FCHLRepresentation, model: BaseEstimator,
-               mols: List[str], y: List[float], n_jobs: int = 1) -> BaseEstimator:
+               mols: List[str], y: List[float], n_jobs: int = 1, y_lower: List[float] = None) -> BaseEstimator:
     """Retrain an FCHL-based model
 
     Args:
@@ -91,6 +95,7 @@ def train_fchl(rep_computer: FCHLRepresentation, model: BaseEstimator,
         mols: List of molecules (XYZ format) in training set
         y: List of other properties to predict
         n_jobs: Number of threads to use for generating representations
+        y_lower: Lower-fidelity estimate of the property. Used for delta learning models
     Returns:
         Retrained model
     """
@@ -100,4 +105,6 @@ def train_fchl(rep_computer: FCHLRepresentation, model: BaseEstimator,
     reps = rep_computer.transform(mols)
 
     # Retrain the model
+    if y_lower is not None:
+        y = np.subtract(y, y_lower)
     return model.fit(reps, y)
