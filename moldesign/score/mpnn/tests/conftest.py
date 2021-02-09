@@ -18,6 +18,16 @@ def train_dataset() -> Dict[str, float]:
 
 
 @fixture()
+def atom_types() -> List[int]:
+    return [1, 6]
+
+
+@fixture()
+def bond_types() -> List[str]:
+    return ['SINGLE']
+
+
+@fixture()
 def model() -> Model:
     node_graph_indices = Input(shape=(1,), name='node_graph_indices', dtype='int32')
     atom_types = Input(shape=(1,), name='atom', dtype='int32')
