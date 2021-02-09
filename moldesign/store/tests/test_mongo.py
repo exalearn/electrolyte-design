@@ -51,10 +51,9 @@ def test_initialize(db):
 
 def test_training_set(init_db, sample_record):
     init_db.update_molecule(sample_record)
-    inputs, outputs = init_db.get_training_set(['identifier.smiles'],
-                                               ['atomization_energy.small_basis'])
-    assert inputs == {'identifier.smiles': ['C']}
-    assert outputs == {'atomization_energy.small_basis': [-1]}
+    output = init_db.get_training_set(['identifier.smiles'], ['atomization_energy.small_basis'])
+    assert output['identifier.smiles'] == ['C']
+    assert output['atomization_energy.small_basis'] == [-1]
 
 
 def test_retrieve_molecules(sample_db):

@@ -1,9 +1,6 @@
 """Converting between different descriptions of molecules"""
-
 from typing import List
 import logging
-
-logger = logging.getLogger(__name__)
 
 import numpy as np
 import networkx as nx
@@ -11,8 +8,11 @@ import networkx as nx
 try:
     from rdkit import Chem
 except ImportError:
+    logger = logging.getLogger(__name__)
     logger.warning('RDKit not installed. Some conversion functions will nto work')
     Chem = None
+
+logger = logging.getLogger(__name__)
 
 
 def convert_rdkit_to_nx(mol: 'Chem.Mol') -> nx.Graph:

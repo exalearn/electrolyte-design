@@ -200,6 +200,7 @@ class MoleculeData(BaseModel):
             p = -1 if state == OxidationState.REDUCED else 1
 
             # Compute the redox without vibrational contributions
+            #  TODO (wardlt): Return the energies in eV as well
             for acc, charged_eng in charged_energies.items():
                 if acc not in neutral_energies:
                     continue

@@ -1,5 +1,5 @@
 """Thin wrapper over MongoDB"""
-from typing import List, Tuple, Dict, Any, Set, Optional
+from typing import List, Dict, Any, Set, Optional
 
 from pymongo import MongoClient
 from pymongo.collection import Collection, UpdateResult
@@ -52,7 +52,7 @@ class MoleculePropertyDB:
         return self.collection.create_index('key', unique=True)
 
     def get_training_set(self, input_fields: List[str], output_fields: List[str]) \
-            -> Tuple[Dict[str, List[Any]], Dict[str, List[Any]]]:
+            -> Dict[str, List[Any]]:
         """Gather a training set from the existing database.
 
         Get a set of entries where both the input and output exist.
@@ -61,8 +61,7 @@ class MoleculePropertyDB:
             input_fields: List of fields that must exist
             output_fields: Which fields to produce in the output fields
         Returns:
-            - Input data: Keys are the requested input fields and values are the values for each matching molecule
-            - Output data: Keys are the requested output fields and values are the values for each matching molecule
+            Dictionary where keys of are the requested input and output fields
         """
 
         # Get the records
@@ -71,16 +70,12 @@ class MoleculePropertyDB:
 
         # Compile the outputs
         # TODO (wardlt): Consider switching to Numpy arrays for these
-        inputs = dict((v, []) for v in input_fields)
-        outputs = dict((v, []) for v in output_fields)
+        output = dict((v, []) for v in input_fields + output_fields)
         for record in cursor:
             record = flatten(record, 'dot')
-            for i in input_fields:
-                inputs[i].append(record[i])
-            for o in output_fields:
-                outputs[o].append(record[o])
-
-        return inputs, outputs
+            for i in input_fields + output_fields:
+                output[i].append(record[i])
+        return output
 
     def get_eligible_molecules(self, input_fields: List[str], output_fields: List[str]) \
             -> Dict[str, List[Any]]:
