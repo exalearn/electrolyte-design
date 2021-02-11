@@ -1,3 +1,4 @@
+from time import perf_counter
 import hashlib
 from argparse import ArgumentParser
 import json
@@ -7,15 +8,18 @@ from typing import Optional
 import schnetpack as spk
 from schnetpack import AtomsData, AtomsLoader
 from schnetpack import train as trn
+from schnetpack.atomistic import Atomwise
 from torch import optim
 import torch
 from scipy.stats import spearmanr, kendalltau
 import pandas as pd
 import numpy as np
 
+from moldesign.score.schnet import Moleculewise
+
 
 def build_fn(atom_features: int = 128, message_steps: int = 8,
-             output_layers: int = 3, reduce_fn: str = 'sum',
+             atomwise: bool = False, output_layers: int = 3, reduce_fn: str = 'sum',
              mean: Optional[float] = None, std: Optional[float] = None):
     schnet = spk.representation.SchNet(
         n_atom_basis=atom_features, n_filters=atom_features,
@@ -23,8 +27,12 @@ def build_fn(atom_features: int = 128, message_steps: int = 8,
         cutoff=4., cutoff_network=spk.nn.cutoff.CosineCutoff
     )
 
-    output = spk.atomistic.Atomwise(n_in=atom_features, n_layers=output_layers, aggregation_mode=reduce_fn, mean=mean, stddev=std,
-                                    property='delta')
+    if atomwise:
+        output = Atomwise(n_in=atom_features, n_layers=output_layers, aggregation_mode=reduce_fn,
+                          mean=mean, stddev=std, property='delta')
+    else:
+        output = Moleculewise(n_in=atom_features, n_layers=output_layers, aggregation_mode=reduce_fn,
+                              mean=mean, stddev=std, property='delta')
     return spk.AtomisticModel(representation=schnet, output_modules=output)
 
 
@@ -32,11 +40,12 @@ if __name__ == "__main__":
     # Define the command line arguments
     arg_parser = ArgumentParser()
     arg_parser.add_argument('--atom-features', help='Number of atomic features', type=int, default=128)
-    arg_parser.add_argument('--num-messages', help='Number of message-passing layers', type=int, default=3)
+    arg_parser.add_argument('--num-messages', help='Number of message-passing layers', type=int, default=6)
     arg_parser.add_argument('--output-layers', help='Number of hidden units of output layers', type=int, default=3)
     arg_parser.add_argument('--batch-size', help='Number of molecules per batch', type=int, default=32)
     arg_parser.add_argument('--num-epochs', help='Number of epochs to run', type=int, default=64)
     arg_parser.add_argument('--readout-fn', default='sum', help='Readout function')
+    arg_parser.add_argument('--atomwise', action='store_true', help='Whether to use atomwise outputs')
     arg_parser.add_argument('--device', default='cpu', help='Device used for training')
 
     # Parse the arguments
@@ -96,6 +105,7 @@ if __name__ == "__main__":
     model = torch.load(os.path.join(test_dir, 'best_model'))
 
     # Run on the validation set and assess statistics
+    test_time = perf_counter()
     y_true = []
     y_pred = []
     for batch in test_loader:
@@ -108,6 +118,7 @@ if __name__ == "__main__":
 
     y_true = np.squeeze(np.concatenate(y_true))
     y_pred = np.squeeze(np.concatenate(y_pred))
+    test_time = perf_counter() - test_time
 
     pd.DataFrame({'true': y_true, 'pred': y_pred}).to_csv(os.path.join(test_dir, 'test_results.csv'), index=False)
 
@@ -117,5 +128,6 @@ if __name__ == "__main__":
             'spearmanr': float(spearmanr(y_true, y_pred)[0]),
             'kendall_tau': float(kendalltau(y_true, y_pred)[0]),
             'mae': float(np.mean(np.abs(y_pred - y_true))),
-            'rmse': float(np.sqrt(np.mean(np.square(y_pred - y_true))))
+            'rmse': float(np.sqrt(np.mean(np.square(y_pred - y_true)))),
+            'test_time': test_time
         }, fp, indent=2)
