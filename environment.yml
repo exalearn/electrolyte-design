@@ -2,6 +2,7 @@ name: edw
 channels:
   - defaults
   - conda-forge
+  - pytorch
 dependencies:
 # Core dependencies for Colmena
   - python==3.7.9
@@ -22,6 +23,8 @@ dependencies:
   - qcengine==0.17.*
   - rdkit==2019.09.3
   - tensorflow==2.1.0
+  - pytorch==1.*
+  - cpuonly
   - qcfractal==0.14.*
   - py-cpuinfo<6
   - msgpack-python==1.*
@@ -42,3 +45,4 @@ dependencies:
       - flatten-dict
       - git+https://github.com/exalearn/colmena.git
       - git+https://github.com/qmlcode/qml.git@develop
+      - schnetpack==0.3.*
