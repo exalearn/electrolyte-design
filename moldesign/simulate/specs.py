@@ -140,7 +140,7 @@ def get_optimization_specification(client: FractalClient, name: str) -> dict:
 
 
 def get_computation_specification(spec_name: str, solvent: Optional[str] = None) -> dict:
-    """Create a computational specification ready to use in a
+    """Create a computational specification ready to use in a QCFractal dataset
 
     Args:
         spec_name: Name of the quantum chemistry specification
@@ -177,8 +177,8 @@ def get_qcinput_specification(spec_name: str, solvent: Optional[str] = None) -> 
         spec_name: Name of the quantum chemistry specification
         solvent: Name of the solvent to use
     Returns:
-          - Input specification
-          - Name of the program
+        - Input specification
+        - Name of the program
     """
 
     # Make the specification
