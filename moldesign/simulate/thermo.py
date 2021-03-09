@@ -113,8 +113,9 @@ def compute_zpe_from_freqs(freqs: List[float], scaling: float = 1, verbose: bool
         (float) Energy for the system in Hartree
     """
 
-    # Make sure they are an ndarray
-    freqs = constants.ureg.Quantity(freqs, "Hz")
+    # Make sure they are a Quantity
+    if not isinstance(freqs, constants.ureg.Quantity):
+        freqs = constants.ureg.Quantity(freqs, "Hz")
 
     # Scale them
     freqs *= scaling
@@ -122,21 +123,21 @@ def compute_zpe_from_freqs(freqs: List[float], scaling: float = 1, verbose: bool
     # Drop the negative frequencies
     neg_freqs = freqs[freqs < 0]
     if len(neg_freqs) > 0:
-        wavenumbers = neg_freqs / c
+        # Get the wavenumbers in 1/cm
+        wavenumbers = (neg_freqs / c).to("1/cm").magnitude
 
         # Remove those with a wavenumber less than 80 cm^-1 (basically zero)
-        wavenumbers = wavenumbers[wavenumbers.to("1/cm").magnitude < -80]
+        wavenumbers = wavenumbers[wavenumbers < -80.]
         if len(wavenumbers) > 0:
-            output = ' '.join(f'{x:.2f}' for x in wavenumbers.to("1/cm").magnitude)
+            output = ' '.join(f'{x:.2f}' for x in wavenumbers)
             if verbose:
                 logger.warning(f'{name} has {len(neg_freqs)} negative components. Largest: [{output}] cm^-1')
 
     #  Convert the frequencies to characteristic temps
-    freqs = constants.ureg.Quantity(freqs, 'Hz')
     temps = (h * freqs / kb)
 
     # Filter out temperatures less than 300 K (using this as a threshold for negative modes
-    temps = temps[np.array(temps.to("K")) > 300.]
+    temps = temps[temps.to("K").magnitude > 300.]
 
     # Compute the ZPE
     zpe = r * temps.sum() / 2
