@@ -1,6 +1,7 @@
 """Test for the MongoDB wrapper"""
 from pymongo import MongoClient
 from pytest import fixture
+from qcelemental.models import OptimizationResult
 
 from moldesign.store.models import MoleculeData
 from moldesign.store.mongo import generate_update, MoleculePropertyDB
@@ -24,8 +25,9 @@ def init_db(db) -> MoleculePropertyDB:
 
 @fixture
 def sample_record() -> MoleculeData:
-    md = MoleculeData.from_identifier('C')
-    md.atomization_energy['small_basis'] = -1
+    md = MoleculeData.from_identifier('O')
+    result = OptimizationResult.parse_file('records/xtb-neutral.json')
+    md.add_geometry(result, "xtb")
     md.subsets.append('pytest')
     return md
 
@@ -39,8 +41,8 @@ def sample_db(init_db, sample_record) -> MoleculePropertyDB:
 def test_generate_update(sample_record):
     update = generate_update(sample_record)
     assert len(update) == 2
-    assert update['$set']['atomization_energy.small_basis'] == -1
-    assert update['$set']['identifier.smiles'] == "C"
+    assert 'data.xtb.neutral.atomization_energy.xtb-no_zpe' in update['$set']
+    assert update['$set']['identifier.smiles'] == "O"
     assert update['$addToSet']['subsets'] == {"$each": ['pytest']}
 
 
@@ -51,30 +53,30 @@ def test_initialize(db):
 
 def test_training_set(init_db, sample_record):
     init_db.update_molecule(sample_record)
-    output = init_db.get_training_set(['identifier.smiles'], ['atomization_energy.small_basis'])
-    assert output['identifier.smiles'] == ['C']
-    assert output['atomization_energy.small_basis'] == [-1]
+    output = init_db.get_training_set(['identifier.smiles'], ['data.xtb.neutral.atomization_energy.xtb-no_zpe'])
+    assert output['identifier.smiles'] == ['O']
+    assert output['data.xtb.neutral.atomization_energy.xtb-no_zpe'][0] > -1
 
 
 def test_retrieve_molecules(sample_db):
-    assert sample_db.get_molecules() == {'InChI=1S/CH4/h1H4'}
+    assert sample_db.get_molecules() == {'InChI=1S/H2O/h1H2'}
 
 
 def test_eligible_molecules(sample_db):
-    records = sample_db.get_eligible_molecules(['identifier.smiles'], ['atomization_energy.g4mp2'])
+    records = sample_db.get_eligible_molecules(['identifier.smiles'], ['data.xtb.neutral.atomization_energy.g4mp2'])
     assert len(records['key']) == 1
-    assert records['identifier.smiles'] == ['C']
+    assert records['identifier.smiles'] == ['O']
 
-    records = sample_db.get_eligible_molecules(['identifier.inchi', 'atomization_energy.small_basis'],
-                                               ['atomization_energy.g4mp2'])
-    assert records['atomization_energy.small_basis'] == [-1]
+    records = sample_db.get_eligible_molecules(['identifier.inchi', 'data.xtb.neutral.atomization_energy.xtb-no_zpe'],
+                                               ['data.xtb.neutral.atomization_energy.g4mp2'])
+    assert records['data.xtb.neutral.atomization_energy.xtb-no_zpe'] == [-0.5159719695680218]
 
 
 def test_get_record(sample_db):
-    record = sample_db.get_molecule_record(smiles='C', projection=["identifier.smiles", "key", "subsets"])
+    record = sample_db.get_molecule_record(smiles='O', projection=["identifier.smiles", "key", "subsets"])
     assert record is not None
     assert record.subsets == ["pytest"]
-    assert record.identifier["smiles"] == "C"
+    assert record.identifier["smiles"] == "O"
 
     record = sample_db.get_molecule_record(smiles='CC')
     assert record is not None

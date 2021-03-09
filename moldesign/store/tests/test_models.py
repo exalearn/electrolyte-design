@@ -1,5 +1,8 @@
-from moldesign.simulate.specs import lookup_reference_energies
-from moldesign.store.models import MoleculeData
+from math import isclose
+
+from qcelemental.models import OptimizationResult, AtomicResult
+
+from moldesign.store.models import MoleculeData, OxidationState, IonizationEnergyRecipe
 
 
 def test_from_smiles():
@@ -15,22 +18,40 @@ def test_from_inchi():
     assert md.key == "VNWKTOKETHGBQD-UHFFFAOYSA-N"
 
 
-def test_atomization():
-    md = MoleculeData.from_identifier("[C]")
-    md.total_energy['neutral'] = {'small_basis': lookup_reference_energies('small_basis')['C']}
-    md.vibrational_modes['neutral'] = {'small_basis': []}
-    md.update_thermochem()
-    assert md.atomization_energy['small_basis'] == 0
-    assert md.atomization_energy['small_basis-no_zpe'] == 0
-    assert md.zpe['neutral']['small_basis'] == 0
+def test_add_data():
+    md = MoleculeData.from_identifier("O")
 
+    # Load the xtb geometry
+    xtb_geom = OptimizationResult.parse_file('records/xtb-neutral.json')
+    md.add_geometry(xtb_geom)
+    assert "xtb" in md.data
+    assert "neutral" in md.data["xtb"]
+    assert isclose(md.data["xtb"][OxidationState.NEUTRAL].atomization_energy["xtb-no_zpe"], -0.515, abs_tol=1e-2)
+    assert ("xtb", "neutral") == md.match_geometry(xtb_geom.final_molecule.to_string("xyz"))
 
-def test_redox():
-    md = MoleculeData.from_identifier("[C]")
-    md.total_energy['neutral'] = {'small_basis': lookup_reference_energies('small_basis')['C']}
-    md.vibrational_modes['neutral'] = {'small_basis': []}
-    md.total_energy['reduced'] = {'small_basis': lookup_reference_energies('small_basis')['C']}
-    md.vibrational_modes['reduced'] = {'small_basis': []}
-    md.update_thermochem()
+    # Load in a relaxed oxidized geometry
+    xtb_geom = OptimizationResult.parse_file('records/xtb-oxidized.json')
+    md.add_geometry(xtb_geom)
+    assert "xtb" in md.data
+    assert "oxidized" in md.data["xtb"]
+    assert ("xtb", "oxidized") == md.match_geometry(xtb_geom.final_molecule.to_string("xyz"))
 
-    assert md.ea['vacuum']['small_basis-no_zpe'] == 0
+    # Load in a oxidized energy for the neutral structure
+    xtb_energy = AtomicResult.parse_file('records/xtb-neutral_xtb-oxidized-energy.json')
+    md.add_single_point(xtb_energy)
+
+    # Show that we can compute a redox potential
+    recipe = IonizationEnergyRecipe(name="xtb-vertical", geometry_level="xtb", energy_level="xtb", adiabatic=False)
+    result = recipe.compute_ionization_potential(md, OxidationState.OXIDIZED)
+    assert md.oxidation_potential['xtb-vertical'] == result
+
+    recipe = IonizationEnergyRecipe(name="xtb", geometry_level="xtb", energy_level="xtb", adiabatic=True)
+    result = recipe.compute_ionization_potential(md, OxidationState.OXIDIZED)
+    assert md.oxidation_potential['xtb'] == result
+    assert md.oxidation_potential['xtb'] < md.oxidation_potential['xtb-vertical']
+
+    # Add a single point small_basis computation
+    smb_hessian = AtomicResult.parse_file('records/xtb-neutral_smb-neutral-hessian.json')
+    md.add_single_point(smb_hessian)
+    assert isclose(md.data["xtb"][OxidationState.NEUTRAL].zpe[OxidationState.NEUTRAL]['small_basis'],
+                   0.02155, abs_tol=1e-3)

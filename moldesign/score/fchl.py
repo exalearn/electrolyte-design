@@ -37,14 +37,38 @@ class FCHLRepresentation(BaseEstimator):
             return np.array(pool.map(_compute_representation, X))
 
 
+def _compute_average(kernel: np.array, reps_i: List[np.array], reps_j: List[np.array]):
+    """Compute the average kernel
+
+    Args:
+        kernel: Kernel to be averaged
+        reps_i: Representations for the "rows" of the kernel matrix
+        reps_j: Representations for the "columns" of the kernel matrix
+    """
+
+    # Count the number of atoms in the rows and columns
+    #  Works by accessing where the atomic number is stored in the FCHL representation
+    natoms_i = np.array([np.greater(x[:][0][1], 0).sum() for x in reps_i])
+    natoms_j = np.array([np.greater(x[:][0][1], 0).sum() for x in reps_j])
+    total_atoms = natoms_i[:, None] * natoms_j[None, :]
+
+    # Compute the average
+    kernel /= total_atoms
+
+
 class FCHLKernel(BaseEstimator):
     """Class for computing the kernel matrix using the qml utility functions
 
     The input `X` to all of the function is the FCHL representation vectors
     """
 
-    def __init__(self):
+    def __init__(self, average: bool = False):
+        """
+        Args:
+            average: Whether to compute the average kernel
+        """
         super(FCHLKernel, self).__init__()
+        self.average = average
         self.train_points = None
 
     def fit(self, X, y=None):
@@ -54,10 +78,20 @@ class FCHLKernel(BaseEstimator):
 
     def fit_transform(self, X, y=None):
         self.fit(X)
-        return np.squeeze(get_local_symmetric_kernels(self.train_points))
+        # Compute the kernel matrix by only computing the lower half
+        kernel = get_local_symmetric_kernels(self.train_points)[0]
+
+        # If specified, average it
+        if self.average:
+            _compute_average(kernel, X, X)
+        return kernel
 
     def transform(self, X, y=None):
-        return get_local_kernels(np.array(X), self.train_points)[0]
+        # Compute the kernel matrix
+        kernel = get_local_kernels(np.array(X), self.train_points)[0]
+        if self.average:
+            _compute_average(kernel, X, self.train_points)
+        return kernel
 
 
 def evaluate_fchl(rep_computer: FCHLRepresentation, model: BaseEstimator,

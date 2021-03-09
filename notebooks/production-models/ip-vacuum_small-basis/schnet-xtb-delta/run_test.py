@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     # Determine the output directory
     test_dir = os.path.join('networks', f'T{args.num_messages}_b{args.batch_size}_n{args.num_epochs}_{params_hash}')
-    os.makedirs(test_dir, exist_ok=True)  # TODO
+    os.makedirs(test_dir)
     with open(os.path.join(test_dir, 'config.json'), 'w') as fp:
         json.dump(run_params, fp)
 
@@ -68,9 +68,10 @@ if __name__ == "__main__":
     valid_loader = AtomsLoader(valid_data, args.batch_size)
 
     # Make the model
-    mean, std = train_loader.get_statistics('delta', divide_by_atoms=True)
+    mean, std = train_loader.get_statistics('delta', divide_by_atoms=args.atomwise)
     model = build_fn(atom_features=args.atom_features, message_steps=args.num_messages,
                      output_layers=args.output_layers, reduce_fn=args.readout_fn,
+                     atomwise=args.atomwise,
                      mean=mean['delta'], std=std['delta'])
 
     # Train the model

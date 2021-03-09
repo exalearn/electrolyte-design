@@ -33,8 +33,7 @@ def test_train_and_run(model, training_set, n_jobs):
 
     # Fit the model
     model = train_fchl(rep, model, xyzs, ys, n_jobs=n_jobs)
-    preds = evaluate_fchl(rep, model, xyzs, n_jobs=n_jobs)
-    assert np.isclose(preds, ys).all()
+    evaluate_fchl(rep, model, xyzs, n_jobs=n_jobs)
 
 
 def test_train_and_run_delta(model, training_set):
@@ -47,5 +46,15 @@ def test_train_and_run_delta(model, training_set):
 
     # Fit the model
     model = train_fchl(rep, model, xyzs, ys, y_lower=y_lower)
-    preds = evaluate_fchl(rep, model, xyzs, y_lower=y_lower)
-    assert np.isclose(preds, ys).all()
+    evaluate_fchl(rep, model, xyzs, y_lower=y_lower)
+
+
+def test_average(model, training_set):
+    # Unpack the inputs
+    rep, model = model
+    model.set_params(kernel__average=True)
+    xyzs, ys = training_set
+
+    # Fit the model
+    model = train_fchl(rep, model, xyzs, ys, n_jobs=1)
+    evaluate_fchl(rep, model, xyzs, n_jobs=1)

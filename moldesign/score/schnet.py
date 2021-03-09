@@ -11,7 +11,6 @@ class Moleculewise(Atomwise):
         r"""
         predicts atomwise property
         """
-        atomic_numbers = inputs[Properties.Z]
         atom_mask = inputs[Properties.atom_mask]
 
         # Pool over atoms
