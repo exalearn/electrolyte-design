@@ -1,7 +1,8 @@
 """Specifications for different levels of computational chemistry"""
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, Union
 from copy import deepcopy
 
+from qcelemental.models import AtomicResult, OptimizationResult
 from qcelemental.models.procedures import QCInputSpecification
 from qcfractal.interface import FractalClient
 
@@ -207,3 +208,28 @@ def lookup_reference_energies(spec_name: str) -> Dict[str, float]:
     """
 
     return _reference_energies[spec_name]
+
+
+def infer_specification_from_result(result: Union[AtomicResult, OptimizationResult]) -> str:
+    """Infer the specification used to run a simulation given the result file
+
+    Args:
+        result: A QCEngine result
+    Returns:
+        The specification used to produce this result
+    """
+
+    # Extract the method and spec
+    if isinstance(result, AtomicResult):
+        model = result.model
+    elif isinstance(result, OptimizationResult):
+        model = result.input_specification.model
+    else:
+        raise ValueError(f'Unrecognized object type: {type(result)}')
+
+    # Match to the specifications
+    for name, spec in _opt_specs.items():
+        qc_spec = spec["qc_spec"]
+        if qc_spec["method"] == model.method and model.basis == qc_spec.get("basis"):
+            return name
+    raise KeyError("Method not matched")

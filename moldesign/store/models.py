@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from qcelemental.models import Molecule, OptimizationResult, AtomicResult
 from qcelemental.physical_constants import constants
 
-from moldesign.simulate.specs import lookup_reference_energies
+from moldesign.simulate.specs import lookup_reference_energies, infer_specification_from_result
 from moldesign.simulate.thermo import compute_zpe_from_freqs, subtract_reference_energies, compute_frequencies
 
 f = constants.ureg.Quantity('96485.3329 A*s/mol')
@@ -71,6 +71,7 @@ class GeometryData(BaseModel):
 
     # Storing the geometry
     xyz: str = Field(..., description="3D coordinates of the molecule in XYZ format")
+    xyz_hash: str = Field(..., description="Hash of the 3D geometry produced by QCElemental")
 
     # Provenance of the geometry
     fidelity: AccuracyLevel = Field(..., description="Level of the fidelity used to compute this molecule")
@@ -266,19 +267,23 @@ class MoleculeData(BaseModel):
         # See if we can find a match
         for level, geoms in self.data.items():
             for state, geom in geoms.items():
-                other_hash = Molecule.from_data(geom.xyz).get_hash()
-                if other_hash == mol_hash:
+                if geom.xyz_hash == mol_hash:
                     return level, state
         raise KeyError('Could not find a match for this geometry')
 
-    def add_geometry(self, relax_record: OptimizationResult, spec_name: str, overwrite: bool = False):
+    def add_geometry(self, relax_record: OptimizationResult, spec_name: Optional[AccuracyLevel] = None,
+                     overwrite: bool = False):
         """Add geometry to this record given a QCFractal
 
         Args:
             relax_record: Output from a relaxation computation with QCEngine
-            spec_name: Name of the accuracy level
+            spec_name: Name of the accuracy level. If ``None``, we will infer it from teh result
             overwrite: Whether to overwrite an existing record
         """
+
+        # Get the specification
+        if spec_name is None:
+            spec_name = infer_specification_from_result(relax_record)
 
         # Get the charge state for the geometry
         oxidation_state = OxidationState.from_charge(round(relax_record.initial_molecule.molecular_charge))
@@ -289,30 +294,38 @@ class MoleculeData(BaseModel):
 
         # Extract the geometry in XYZ format
         xyz = relax_record.final_molecule.to_string("xyz")
+        xyz_hash = Molecule.from_data(xyz, dtype="xyz").get_hash()
 
         # Get the total energy
         total_energy = relax_record.energies[-1]
 
         # Make the record and save it
-        entry = GeometryData(xyz=xyz, fidelity=spec_name, oxidation_state=oxidation_state,
+        entry = GeometryData(xyz=xyz, xyz_hash=xyz_hash, fidelity=spec_name, oxidation_state=oxidation_state,
                              total_energy={oxidation_state: {spec_name: total_energy}})
         entry.update_thermochem()
         if spec_name not in self.data:
             self.data[spec_name] = {}
         self.data[spec_name][oxidation_state] = entry
 
-    def add_single_point(self, record: AtomicResult, spec_name: AccuracyLevel, solvent_name: Optional[str] = None):
+    def add_single_point(self, record: AtomicResult,
+                         spec_name: Optional[AccuracyLevel] = None,
+                         solvent_name: Optional[str] = None):
         """Add a single-point computation to the record
 
         Args:
             record: Record containing the data to be added
-            spec_name: Specification used to compute this structure
+            spec_name: Specification used to compute this structure. If none provided, it is inferred from the
+                specification in the result
             solvent_name: Name of the solvent, if modeled
         """
 
         # Match the geometry
         geom_level, geom_state = self.match_geometry(record.molecule.to_string("xyz"))
         geom_record = self.data[geom_level][geom_state]
+
+        # Infer the method, if needed
+        if spec_name is None:
+            spec_name = infer_specification_from_result(record)
 
         # Get the oxidation state of the molecule used in this computation
         my_state = OxidationState.from_charge(round(record.molecule.molecular_charge))
