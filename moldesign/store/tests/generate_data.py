@@ -20,7 +20,7 @@ if __name__ == "__main__":
         print(record.json(), file=fp)
 
     # Compute the adiabatic oxidation potential
-    xtb_oxidized_xyz, _, record = relax_structure(xyz, xtb_spec, code=xtb, charge=1)
+    xtb_oxidized_xyz, _, record = relax_structure(xtb_neutral_xyz, xtb_spec, code=xtb, charge=1)
     with open('records/xtb-oxidized.json', 'w') as fp:
         print(record.json(), file=fp)
 

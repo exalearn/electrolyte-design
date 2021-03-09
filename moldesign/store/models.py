@@ -313,6 +313,24 @@ class MoleculeData(BaseModel):
             self.data[spec_name] = {}
         self.data[spec_name][oxidation_state] = entry
 
+        # Check if the beginning matches another geometry,
+        #   which allows us to define the total energy for that structure
+        if isinstance(relax_record, OptimizationRecord):
+            geom = relax_record.get_initial_molecule()
+        else:
+            geom = relax_record.initial_molecule
+
+        try:
+            init_level, init_state = self.match_geometry(geom.to_string("xyz"))
+        except KeyError:
+            return
+
+        # Add the energy
+        geo_data = self.data[init_level][init_state]
+        if oxidation_state not in geo_data.total_energy:
+            geo_data.total_energy[oxidation_state] = dict()
+        geo_data.total_energy[oxidation_state][spec_name] = relax_record.energies[-1]
+
     def add_single_point(self, record: Union[AtomicResult, ResultRecord],
                          spec_name: Optional[AccuracyLevel] = None,
                          solvent_name: Optional[str] = None):
