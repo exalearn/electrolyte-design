@@ -2,6 +2,7 @@
 from typing import Dict, List, Optional, Union, Tuple
 from enum import Enum
 
+from qcfractal.interface.models import OptimizationRecord, ResultRecord
 from rdkit import Chem
 from pydantic import BaseModel, Field
 from qcelemental.models import Molecule, OptimizationResult, AtomicResult
@@ -271,7 +272,8 @@ class MoleculeData(BaseModel):
                     return level, state
         raise KeyError('Could not find a match for this geometry')
 
-    def add_geometry(self, relax_record: OptimizationResult, spec_name: Optional[AccuracyLevel] = None,
+    def add_geometry(self, relax_record: Union[OptimizationResult, OptimizationRecord],
+                     spec_name: Optional[AccuracyLevel] = None,
                      overwrite: bool = False):
         """Add geometry to this record given a QCFractal
 
@@ -285,16 +287,20 @@ class MoleculeData(BaseModel):
         if spec_name is None:
             spec_name = infer_specification_from_result(relax_record)
 
+        # Get the geometry
+        if isinstance(relax_record, OptimizationRecord):
+            geom = relax_record.get_final_molecule()
+        else:
+            geom = relax_record.final_molecule
+        xyz = geom.to_string("xyz")
+        xyz_hash = Molecule.from_data(xyz, dtype="xyz").get_hash()
+
         # Get the charge state for the geometry
-        oxidation_state = OxidationState.from_charge(round(relax_record.initial_molecule.molecular_charge))
+        oxidation_state = OxidationState.from_charge(round(geom.molecular_charge))
 
         # Check if the record already exists
         if not overwrite and spec_name in self.data and oxidation_state in self.data[spec_name]:
             raise ValueError(f'Already have {oxidation_state} geometry for {spec_name}')
-
-        # Extract the geometry in XYZ format
-        xyz = relax_record.final_molecule.to_string("xyz")
-        xyz_hash = Molecule.from_data(xyz, dtype="xyz").get_hash()
 
         # Get the total energy
         total_energy = relax_record.energies[-1]
@@ -307,7 +313,7 @@ class MoleculeData(BaseModel):
             self.data[spec_name] = {}
         self.data[spec_name][oxidation_state] = entry
 
-    def add_single_point(self, record: AtomicResult,
+    def add_single_point(self, record: Union[AtomicResult, ResultRecord],
                          spec_name: Optional[AccuracyLevel] = None,
                          solvent_name: Optional[str] = None):
         """Add a single-point computation to the record
@@ -319,8 +325,14 @@ class MoleculeData(BaseModel):
             solvent_name: Name of the solvent, if modeled
         """
 
+        # Get the geometry
+        if isinstance(record, AtomicResult):
+            geom = record.molecule
+        else:
+            geom = record.get_molecule()
+
         # Match the geometry
-        geom_level, geom_state = self.match_geometry(record.molecule.to_string("xyz"))
+        geom_level, geom_state = self.match_geometry(geom.to_string("xyz"))
         geom_record = self.data[geom_level][geom_state]
 
         # Infer the method, if needed
@@ -328,7 +340,7 @@ class MoleculeData(BaseModel):
             spec_name = infer_specification_from_result(record)
 
         # Get the oxidation state of the molecule used in this computation
-        my_state = OxidationState.from_charge(round(record.molecule.molecular_charge))
+        my_state = OxidationState.from_charge(round(geom.molecular_charge))
 
         # All calculations compute the energy. Store it as appropriate
         total_energy = record.properties.return_energy
@@ -347,7 +359,7 @@ class MoleculeData(BaseModel):
         if record.driver == "hessian":
             if solvent_name is not None:
                 raise ValueError("We do not yet support Hessians in solvent in our data model!")
-            freqs = compute_frequencies(record.return_result, record.molecule)
+            freqs = compute_frequencies(record.return_result, geom).tolist()
             if my_state not in geom_record.vibrational_modes:
                 geom_record.vibrational_modes[my_state] = {}
             geom_record.vibrational_modes[my_state][spec_name] = freqs
