@@ -3,10 +3,13 @@ from typing import Optional, Dict, Tuple, Union
 from copy import deepcopy
 
 from qcelemental.models import AtomicResult, OptimizationResult
+from qcelemental.models.common_models import Model
 from qcelemental.models.procedures import QCInputSpecification
 from qcfractal.interface import FractalClient
 
 # Keywords used by QC codes
+from qcfractal.interface.models import OptimizationRecord, ResultRecord
+
 _nwc_xfine_kwds = {'values': {
     'dft__convergence__energy': '1e-8',
     'dft__grid': 'xfine',
@@ -210,7 +213,8 @@ def lookup_reference_energies(spec_name: str) -> Dict[str, float]:
     return _reference_energies[spec_name]
 
 
-def infer_specification_from_result(result: Union[AtomicResult, OptimizationResult]) -> str:
+def infer_specification_from_result(result: Union[AtomicResult, ResultRecord,
+                                                  OptimizationResult, OptimizationRecord]) -> str:
     """Infer the specification used to run a simulation given the result file
 
     Args:
@@ -224,12 +228,18 @@ def infer_specification_from_result(result: Union[AtomicResult, OptimizationResu
         model = result.model
     elif isinstance(result, OptimizationResult):
         model = result.input_specification.model
+    elif isinstance(result, OptimizationRecord):
+        model = Model(method=result.qc_spec.method, basis=result.qc_spec.basis)
+    elif isinstance(result, ResultRecord):
+        model = result
     else:
         raise ValueError(f'Unrecognized object type: {type(result)}')
 
     # Match to the specifications
     for name, spec in _opt_specs.items():
         qc_spec = spec["qc_spec"]
-        if qc_spec["method"] == model.method and model.basis == qc_spec.get("basis"):
+        if qc_spec["method"].lower() == model.method.lower() and \
+                model.dict(include={'basis'}, exclude_none=True).get("basis", "") \
+                == qc_spec.get("basis", "").lower():
             return name
-    raise KeyError("Method not matched")
+    raise KeyError(f"Method not matched. method={model.method} basis={model.basis}")

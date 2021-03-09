@@ -16,8 +16,8 @@ from qcfractal.interface.collections.collection import Collection
 from qcfractal.interface.models import ComputeResponse
 
 from .specs import get_optimization_specification, get_computation_specification, lookup_reference_energies
-from .thermo import compute_zpe
-from .functions import generate_inchi_and_xyz, subtract_reference_energies
+from .thermo import compute_zpe, subtract_reference_energies
+from .functions import generate_inchi_and_xyz
 
 logger = logging.getLogger(__name__)
 
