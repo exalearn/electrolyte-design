@@ -1,10 +1,14 @@
 """Test for the MongoDB wrapper"""
+from pathlib import Path
+
 from pymongo import MongoClient
 from pytest import fixture
 from qcelemental.models import OptimizationResult
 
 from moldesign.store.models import MoleculeData
 from moldesign.store.mongo import generate_update, MoleculePropertyDB
+
+_my_path = Path(__file__).parent
 
 
 @fixture
@@ -26,7 +30,7 @@ def init_db(db) -> MoleculePropertyDB:
 @fixture
 def sample_record() -> MoleculeData:
     md = MoleculeData.from_identifier('O')
-    result = OptimizationResult.parse_file('records/xtb-neutral.json')
+    result = OptimizationResult.parse_file(_my_path.joinpath('records/xtb-neutral.json'))
     md.add_geometry(result, "xtb")
     md.subsets.append('pytest')
     return md
