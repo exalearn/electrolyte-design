@@ -6,6 +6,7 @@ from pymongo.collection import Collection, UpdateResult
 from flatten_dict import flatten
 
 from moldesign.store.models import MoleculeData
+from moldesign.store.recipes import apply_recipes
 
 
 def generate_update(moldata: MoleculeData) -> Dict[str, Dict[str, Any]]:
@@ -120,8 +121,15 @@ class MoleculePropertyDB:
         Returns:
             An update result
         """
+
+        # Double-check the format
         MoleculeData.validate(molecule)
-        molecule.update_thermochem()  # Ensure all derived fields are computed, if available
+
+        # Update the derived properties
+        molecule.update_thermochem()
+        apply_recipes(molecule)
+
+        # Generate the update and send it to the database
         update_record = generate_update(molecule)
         return self.collection.update_one({'key': molecule.key}, update_record, upsert=True)
 
@@ -140,7 +148,7 @@ class MoleculePropertyDB:
         return set(self.collection.distinct(output_key, filter=match))
 
     def get_molecule_record(self, key: Optional[str] = None, smiles: Optional[str] = None, inchi: Optional[str] = None,
-                            **kwargs) -> Optional[MoleculeData]:
+                            **kwargs) -> MoleculeData:
         """Get a record for a certain molecule
 
         Args:
@@ -168,3 +176,14 @@ class MoleculePropertyDB:
         if key is not None:
             return MoleculeData(key=key)
         return MoleculeData.from_identifier(**{'inchi': inchi, 'smiles': smiles})
+
+    def update_derived_properties(self):
+        """Update the derived properties for all molecules in a database"""
+
+        cursor = self.collection.find({})
+        for record in cursor:
+            # Get a molecule
+            data = MoleculeData.parse_obj(record)
+
+            # Update its properties
+            self.update_molecule(data)
