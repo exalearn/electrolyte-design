@@ -3,9 +3,12 @@ import os
 
 from qcelemental.models import Molecule
 from pytest import fixture
+from rdkit import Chem
 import numpy as np
 
-from moldesign.simulate.thermo import compute_zpe
+from moldesign.simulate.functions import generate_inchi_and_xyz
+from moldesign.simulate.thermo import compute_zpe, subtract_reference_energies
+from moldesign.simulate.specs import lookup_reference_energies
 
 _path = os.path.dirname(__file__)
 
@@ -40,3 +43,19 @@ def hess() -> np.ndarray:
 def test_zpe(mol, hess):
     zpe = compute_zpe(hess, mol)
     print(zpe)
+
+
+def test_subtract_reference_energies():
+    # Make a RDKit and QCEngine representation of a molecule
+    _, xyz = generate_inchi_and_xyz('C')
+    molr = Chem.MolFromSmiles('C')
+    molr = Chem.AddHs(molr)
+    molq = Molecule.from_data(xyz, 'xyz')
+
+    # Get the desired answer
+    my_ref = lookup_reference_energies('small_basis')
+    actual = my_ref['C'] + 4 * my_ref['H']
+
+    # Check it works with either RDKit or QCElemental inputs
+    assert subtract_reference_energies(0, molr, my_ref) == -actual
+    assert subtract_reference_energies(0, molq, my_ref) == -actual
