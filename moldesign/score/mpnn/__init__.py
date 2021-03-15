@@ -31,10 +31,25 @@ class MPNNMessage:
         # Makes a copy of the weights to ensure they are not memoryview objects
         self.weights = [np.array(v) for v in model.get_weights()]
 
+        # Cached copy of the model
+        self._model = None
+
+    def __getstate__(self):
+        """Get all of state except the model"""
+        state = self.__dict__.copy()
+        del state['_model']
+        return state
+
     def get_model(self) -> tf.keras.Model:
-        model = tf.keras.models.model_from_json(self.config, custom_objects=custom_objects)
-        model.set_weights(self.weights)
-        return model
+        """Get a copy of the model
+
+        Returns:
+            The model specified by this message
+        """
+        if self._model is None:
+            self._model = tf.keras.models.model_from_json(self.config, custom_objects=custom_objects)
+            self._model.set_weights(self.weights)
+        return self._model
 
 
 # TODO (wardlt): Split into multiple functions? I don't like having so many input type options
