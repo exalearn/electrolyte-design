@@ -14,6 +14,7 @@ import os
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from rdkit import Chem
 from colmena.method_server import ParslMethodServer
 from colmena.models import Result
 from colmena.redis.queue import ClientQueues, make_queue_pairs
@@ -22,14 +23,13 @@ from colmena.thinker.resources import ResourceCounter
 from qcelemental.models import OptimizationResult, AtomicResult, DriverEnum
 
 from config import theta_nwchem_config
-from moldesign.simulate.functions import run_single_point
 from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, MPNNMessage, custom_objects
 from moldesign.store.models import MoleculeData
 from moldesign.store.mongo import MoleculePropertyDB
 from moldesign.utils import get_platform_info
 
 # Hard-coded property values
-output_property = 'oxidation_potential.small_basis'
+output_property = 'oxidation_potential.smb-vacuum'
 
 
 def run_simulation(smiles: str, n_nodes: int) -> Tuple[List[OptimizationResult], List[AtomicResult]]:
@@ -41,8 +41,9 @@ def run_simulation(smiles: str, n_nodes: int) -> Tuple[List[OptimizationResult],
     Returns:
         Relax records for the neutral and ionized geometry
     """
-    from moldesign.simulate.functions import generate_inchi_and_xyz, relax_structure
+    from moldesign.simulate.functions import generate_inchi_and_xyz, relax_structure, run_single_point
     from moldesign.simulate.specs import get_qcinput_specification
+    from qcelemental.models import DriverEnum
 
     # Make the initial geometry
     inchi, xyz = generate_inchi_and_xyz(smiles)
@@ -58,11 +59,11 @@ def run_simulation(smiles: str, n_nodes: int) -> Tuple[List[OptimizationResult],
 
     # Compute the neutral geometry and hessian
     neutral_xyz, _, neutral_relax = relax_structure(xyz, spec, compute_config=compute_config, charge=0, code=code)
-    neutral_hessian = run_single_point(neutral_xyz, DriverEnum.hessian, spec, charge=0, compute_config=compute_config)
+    neutral_hessian = run_single_point(neutral_xyz, DriverEnum.hessian, spec, charge=0, compute_config=compute_config, code=code)
 
     # Compute the relaxed geometry
-    oxidized_xyz, _, oxidized_relax = relax_structure(xyz, spec, compute_config=compute_config, charge=1, code=code)
-    oxidized_hessian = run_single_point(oxidized_xyz, DriverEnum.hessian, spec, charge=1, compute_config=compute_config)
+    oxidized_xyz, _, oxidized_relax = relax_structure(neutral_xyz, spec, compute_config=compute_config, charge=1, code=code)
+    oxidized_hessian = run_single_point(oxidized_xyz, DriverEnum.hessian, spec, charge=1, compute_config=compute_config, code=code)
     return [neutral_relax, oxidized_relax], [neutral_hessian, oxidized_hessian]
 
 
@@ -88,7 +89,7 @@ class Thinker(BaseThinker):
             mpnns: List of MPNNs to use for selecting samples
             output_dir:
         """
-        super().__init__(queues, ResourceCounter(num_nodes, ['train', 'inference', 'simulate']), daemon=True)
+        super().__init__(queues, ResourceCounter(num_nodes, ['training', 'inference', 'simulation']), daemon=True)
 
         # Configuration for the run
         self.mongo = database
@@ -110,8 +111,8 @@ class Thinker(BaseThinker):
         self.target_size = n_to_evaluate + len(self.database)
 
         # Prepare search space
-        self.mols = pd.read_csv(search_space)
-        self.inference_chunks = np.array_split(self.mols, min(len(self.mols) // self.inference_chunk_size, 1))
+        self.mols = pd.read_csv(search_space, delim_whitespace=True)
+        self.inference_chunks = np.array_split(self.mols, max(len(self.mols) // self.inference_chunk_size, 1))
         self.logger.info(f'Split {len(self.mols)} molecules into {len(self.inference_chunks)} chunks for inference')
 
         # Inter-thread communication stuff
@@ -125,6 +126,9 @@ class Thinker(BaseThinker):
 
         # Allocate all resource to inference for the first task
         self.rec.reallocate(None, 'inference', num_nodes)
+        self.rec.acquire('inference', num_nodes)
+        
+        # Mark the number of inference slots we have available
         for _ in range(self.rec.allocated_slots('inference') * 2):
             self.inference_slots.release()
 
@@ -138,56 +142,78 @@ class Thinker(BaseThinker):
         # Wait until the inference tasks event to finish
         self.inference_finished.wait()
         self.inference_finished.clear()
+        self.logger.info(f'Finished first round of inference')
 
         while not self.done.is_set():
             # Reallocate all resources from inference to QC tasks
-            self.rec.reallocate('inference', 'qc', self.rec.allocated_slots('inference'))
+            self.rec.release('inference', self.rec.allocated_slots('inference'))
+            self.rec.reallocate('inference', 'simulation', self.rec.allocated_slots('inference'))
+            self.inference_slots = Semaphore()  # Reset the number of inference slots to zero
 
             # Wait until QC tasks complete
             retrain_size = len(self.database) + self.n_complete_before_retrain
+            self.logger.info(f'Waiting until database reaches {retrain_size}. Current size: {len(self.database)}')
             while len(self.database) < retrain_size:
                 if self.done.wait(15):
                     return
 
             # Start the training process
+            self.logger.info('Triggered retraining process. Beginning to allocate nodes from simulation to training')
             self.start_training.set()
 
             # Gather nodes for training until either training finishes or we have 1 node per model.
             n_allocated = 0
-            while self.all_training_started.set() or n_allocated >= len(self.mpnns):
-                if self.rec.reallocate('qc', 'training', 1, cancel_if=self.all_training_started):
-                    n_allocated += 1
+            while not self.all_training_started.is_set() or n_allocated >= len(self.mpnns):
+                if self.rec.reallocate('simulation', 'training', self.nodes_per_qc, cancel_if=self.all_training_started):
+                    n_allocated += self.nodes_per_qc
             self.all_training_started.clear()
+            self.logger.info('All training tasks have been submitted. Waiting for them to finish before deallocating to inference')
 
             # Allocate initial nodes for inference
             #  Blocks until training is complete
             self.rec.reallocate('training', 'inference', self.rec.allocated_slots('training'))
 
             # Trigger inference
+            self.logger.info('Beginning inference process. Will gradually scavange nodes from simulation tasks')
             self.start_inference.set()
-            while self.inference_finished.set() or self.rec.allocated_slots("qc") == 0:
-                self.rec.reallocate('qc', 'inference', self.nodes_per_qc, cancel_if=self.inference_finished)
+            while self.inference_finished.is_set() or self.rec.allocated_slots("simulation") == 0:
+                # Request a block of nodes for inference
+                acq_success = self.rec.reallocate('simulation', 'inference', self.nodes_per_qc, cancel_if=self.inference_finished)
+                self.rec.acquire('inference', self.nodes_per_qc)
+                
+                # Make them available to the task submission thread
+                if acq_success:
+                    for _ in range(self.nodes_per_qc * 2): # 1 execution slot + 1 for prefetch
+                        self.inference_slots.release()
+            self.inference_finished.wait()
+            self.inference_finished.clear()
+            self.rec.release('inference', self.rec.allocated_slots('inference'))
+            self.logger.info(f'Completed inference and task selection')
 
-    @task_submitter(task_type='qc', n_slots=1)
+    @task_submitter(task_type='simulation', n_slots=2)
     def submit_qc(self):
         # Wait until all slots free up
-        acq_success = self.rec.acquire('qc', self.nodes_per_qc - 1, cancel_if=self.done)
+        acq_success = self.rec.acquire('simulation', self.nodes_per_qc - 2, cancel_if=self.done)
         if not acq_success:
             raise ValueError('Node allocation failed')
 
         # Submit the next task
         with self.task_queue_lock:
-            self.queues.send_inputs((self.task_queue.pop(), self.nodes_per_qc),
-                                    method='run_simulation', keep_inputs=True, topic='qc')
+            inchi = self.task_queue.pop()
+            mol = Chem.MolFromInchi(inchi)
+            smiles = Chem.MolToSmiles(mol)
+            self.logger.info(f'Submitted {smiles} to simulate with NWChem')
+            self.queues.send_inputs(smiles, self.nodes_per_qc,
+                                    method='run_simulation', keep_inputs=True, topic='simulate')
 
     @result_processor(topic='simulate')
     def process_outputs(self, result: Result):
         # Mark that the resources are available
         smiles, n_nodes = result.args
-        self.rec.release("qc", n_nodes)
+        self.rec.release("simulation", n_nodes)
 
         # If successful, add to the database
-        if not result.success:
+        if result.success:
             # Store the data in a molecule data object
             data = MoleculeData.from_identifier(smiles=smiles)
             opt_records, hess_records = result.value
@@ -197,12 +223,16 @@ class Thinker(BaseThinker):
                 data.add_single_point(r)
 
             # Add to database
-            # self.mongo.update_molecule(data)  # Commented out while testing performance
+            self.mongo.update_molecule(data)
+            self.database.append(data)
 
             # Write to disk
             with open(self.output_dir.joinpath('qcfractal-records.json'), 'a') as fp:
                 for r in opt_records + hess_records:
                     print(r.json(), file=fp)
+            self.logger.info(f'Added complete calculation for {smiles} to database.')
+        else:
+            self.logger.info(f'Computations failed for {smiles}. Check JSON file for stacktrace')
 
         # Write out the result to disk
         with open(self.output_dir.joinpath('simulation-results.json'), 'a') as fp:
@@ -211,10 +241,11 @@ class Thinker(BaseThinker):
     @event_responder(event_name='start_training')
     def train_models(self):
         """Train machine learning models"""
+        self.start_training.clear()
 
         for mid, model in enumerate(self.mpnns):
             # Wait until we have nodes
-            self.rec.acquire('train', 1)
+            self.rec.acquire('training', 1)
 
             # Make the database
             train_data = dict(
@@ -224,8 +255,11 @@ class Thinker(BaseThinker):
 
             # Make the MPNN message
             model_msg = MPNNMessage(model)
-            self.queues.send_inputs(model_msg, train_data, 128, method='update_mpnn', topic='train',
-                                    task_info={'model_id': mid})
+            self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
+            self.queues.send_inputs(model_msg, train_data, 8, method='update_mpnn', topic='train',
+                                    task_info={'model_id': mid}, 
+                                    keep_inputs=False,
+                                    input_kwargs={'patience': 2, 'random_state': mid})
         self.all_training_started.set()
 
     @result_processor(topic='train')
@@ -252,14 +286,23 @@ class Thinker(BaseThinker):
 
     def launch_inference(self):
         """Submit inference tasks for the yet-unlabelled samples"""
+        
+        # Make a folder for the models
+        model_folder = self.output_dir.joinpath('models')
+        model_folder.mkdir(exist_ok=True)
 
         # Submit the chunks to the workflow engine
         for mid, model in enumerate(self.mpnns):
+            # Save the current model to disk
+            model_path = model_folder.joinpath(f'model-{mid}.h5')
+            model.save(model_path)
+            
+            # Read the model in
             for cid, chunk in enumerate(self.inference_chunks):
                 self.inference_slots.acquire()  # Wait to get a slot
-                self.queues.send_inputs(model, chunk,
-                                        topic='screen', method='evaluate_mpnn',
-                                        keep_inputs=True,
+                self.queues.send_inputs([model_path], chunk['smiles'].tolist(),
+                                        topic='infer', method='evaluate_mpnn',
+                                        keep_inputs=False,
                                         task_info={'chunk_id': cid, 'chunk_size': len(chunk), 'model_id': mid})
         self.logger.info('Finished submitting molecules for inference')
 
@@ -271,7 +314,7 @@ class Thinker(BaseThinker):
         # Begin the job submission thread
         submit_thread = Thread(target=self.launch_inference)
         submit_thread.start()
-        self.logger.info('Launched the inference tasks')
+        self.logger.info('Beginning to submit inference tasks')
 
         #  Make arrays that will hold the output results from each run
         y_pred = [np.zeros((len(x), len(self.mpnns)), dtype=np.float32) for x in self.inference_chunks]
@@ -280,11 +323,15 @@ class Thinker(BaseThinker):
         n_tasks = len(self.inference_chunks) * len(self.mpnns)
         for i in range(n_tasks):
             # Wait for a result
-            result = self.queues.get_result(topic='inference')
+            result = self.queues.get_result(topic='infer')
             self.logger.info(f'Received inference task {i + 1}/{n_tasks}')
 
             # Free up resources to submit another
             self.inference_slots.release()
+            
+            # Save the inference information to disk
+            with open(self.output_dir.joinpath('inference-records.json'), 'a') as fp:
+                print(result.json(exclude={'value'}), file=fp)
 
             # Store the outputs
             chunk_id = result.task_info.get('chunk_id')
@@ -318,7 +365,7 @@ class Thinker(BaseThinker):
         y_std = y_pred.std(axis=1)
 
         # Rank compounds by different criteria
-        molecules = self.mols['inchi']
+        molecules = self.mols['inchi'].values
         greedy_list = molecules[np.argsort(-y_mean)].tolist()
         uncertainty_list = molecules[np.argsort(-y_std)].tolist()
 
@@ -338,143 +385,149 @@ class Thinker(BaseThinker):
                 else:  # Get a greedy entry
                     mol = greedy_list.pop()
 
-                # Add it to list if not in database
+                # Add it to list if not in database or not already in queue
                 if mol not in already_searched and mol not in self.task_queue:
                     self.task_queue.append(mol)
         self.logger.info('Updated task list')
 
-    @result_processor(topic='simulation')
-    def process_results(self):
+   
 
-        if __name__ == '__main__':
-            # User inputs
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--redishost", default="127.0.0.1",
-                                help="Address at which the redis server can be reached")
-            parser.add_argument("--redisport", default="6379",
-                                help="Port on which redis is available")
-            parser.add_argument('--mpnn-config-directory', help='Directory containing the MPNN-related JSON files',
-                                required=True)
-            parser.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
-            parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
-            parser.add_argument('--nodes-per-task', help='Number of nodes per NWChem task.', default=2, type=int)
-            parser.add_argument("--search-size", default=1000, type=int,
-                                help="Number of new molecules to evaluate during this search")
-            parser.add_argument('--retrain-frequency', default=50, type=int,
-                                help="Number of completed computations that will trigger a retraining")
-            parser.add_argument("--molecules-per-ml-task", default=10000, type=int,
-                                help="Number molecules per inference task")
-            parser.add_argument("--ml-prefetch", default=1, help="Number of ML tasks to prefech on each node", type=int)
+if __name__ == '__main__':
+    # User inputs
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--redishost", default="127.0.0.1",
+                        help="Address at which the redis server can be reached")
+    parser.add_argument("--redisport", default="6379",
+                        help="Port on which redis is available")
+    parser.add_argument("--mongohost", default="127.0.0.1",
+                        help="Address at which the redis server can be reached")
+    parser.add_argument("--mongoport", type=int, default=27017,
+                        help="Port on which MongoDB is available")
+    parser.add_argument('--mpnn-config-directory', help='Directory containing the MPNN-related JSON files',
+                        required=True)
+    parser.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
+    parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
+    parser.add_argument('--nodes-per-task', help='Number of nodes per NWChem task.', default=2, type=int)
+    parser.add_argument("--search-size", default=1000, type=int,
+                        help="Number of new molecules to evaluate during this search")
+    parser.add_argument('--retrain-frequency', default=50, type=int,
+                        help="Number of completed computations that will trigger a retraining")
+    parser.add_argument("--molecules-per-ml-task", default=10000, type=int,
+                        help="Number molecules per inference task")
+    parser.add_argument("--ml-prefetch", default=1, help="Number of ML tasks to prefech on each node", type=int)
 
-            # Parse the arguments
-            args = parser.parse_args()
-            run_params = args.__dict__
+    # Parse the arguments
+    args = parser.parse_args()
+    run_params = args.__dict__
 
-            # Define the compute setting for the system (only relevant for NWChem)
-            nnodes = int(os.environ.get("COBALT_JOBSIZE", "1"))
-            run_params["nnodes"] = nnodes
-            run_params["qc_workers"] = nnodes / args.nodes_per_task
+    # Define the compute setting for the system (only relevant for NWChem)
+    nnodes = int(os.environ.get("COBALT_JOBSIZE", "1"))
+    run_params["nnodes"] = nnodes
+    run_params["qc_workers"] = nnodes / args.nodes_per_task
 
-            # Load in the models, initial dataset, agent and search space
-            models = [tf.keras.models.load_model(path, custom_objects=custom_objects) for path in args.mpnn_model_files]
-            with open(os.path.join(args.mpnn_config_directory, 'atom_types.json')) as fp:
-                atom_types = json.load(fp)
-            with open(os.path.join(args.mpnn_config_directory, 'bond_types.json')) as fp:
-                bond_types = json.load(fp)
+    # Load in the models, initial dataset, agent and search space
+    models = [tf.keras.models.load_model(path, custom_objects=custom_objects) for path in args.mpnn_model_files]
+    with open(os.path.join(args.mpnn_config_directory, 'atom_types.json')) as fp:
+        atom_types = json.load(fp)
+    with open(os.path.join(args.mpnn_config_directory, 'bond_types.json')) as fp:
+        bond_types = json.load(fp)
 
-            # Create an output directory with the time and run parameters
-            start_time = datetime.utcnow()
-            params_hash = hashlib.sha256(json.dumps(run_params).encode()).hexdigest()[:6]
-            out_dir = os.path.join('runs', f'{args.qc_spec}-{start_time.strftime("%d%b%y-%H%M%S")}-{params_hash}')
-            os.makedirs(out_dir, exist_ok=False)
+    # Create an output directory with the time and run parameters
+    start_time = datetime.utcnow()
+    params_hash = hashlib.sha256(json.dumps(run_params).encode()).hexdigest()[:6]
+    out_dir = os.path.join('runs', f'N{nnodes}-n{args.nodes_per_task}-{start_time.strftime("%d%b%y-%H%M%S")}-{params_hash}')
+    os.makedirs(out_dir, exist_ok=False)
 
-            # Save the run parameters to disk
-            with open(os.path.join(out_dir, 'run_params.json'), 'w') as fp:
-                json.dump(run_params, fp, indent=2)
-            with open(os.path.join(out_dir, 'environment.json'), 'w') as fp:
-                json.dump(dict(os.environ), fp, indent=2)
+    # Save the run parameters to disk
+    with open(os.path.join(out_dir, 'run_params.json'), 'w') as fp:
+        json.dump(run_params, fp, indent=2)
+    with open(os.path.join(out_dir, 'environment.json'), 'w') as fp:
+        json.dump(dict(os.environ), fp, indent=2)
 
-            # Save the platform information to disk
-            host_info = get_platform_info()
-            with open(os.path.join(out_dir, 'host_info.json'), 'w') as fp:
-                json.dump(host_info, fp, indent=2)
+    # Save the platform information to disk
+    host_info = get_platform_info()
+    with open(os.path.join(out_dir, 'host_info.json'), 'w') as fp:
+        json.dump(host_info, fp, indent=2)
 
-            # Set up the logging
-            handlers = [logging.FileHandler(os.path.join(out_dir, 'runtime.log')),
-                        logging.StreamHandler(sys.stdout)]
+    # Set up the logging
+    handlers = [logging.FileHandler(os.path.join(out_dir, 'runtime.log')),
+                logging.StreamHandler(sys.stdout)]
 
-            class ParslFilter(logging.Filter):
-                """Filter out Parsl debug logs"""
+    class ParslFilter(logging.Filter):
+        """Filter out Parsl debug logs"""
 
-                def filter(self, record):
-                    return not (record.levelno == logging.DEBUG and '/parsl/' in record.pathname)
+        def filter(self, record):
+            return not (record.levelno == logging.DEBUG and '/parsl/' in record.pathname)
 
-            for h in handlers:
-                h.addFilter(ParslFilter())
+    for h in handlers:
+        h.addFilter(ParslFilter())
 
-            logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                                level=logging.INFO, handlers=handlers)
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                        level=logging.INFO, handlers=handlers)
 
-            # Write the configuration
-            # ML nodes: N for updating models, 1 for MolDQN, 1 for inference runs
-            config = theta_nwchem_config(os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.qc_parallelism,
-                                         total_nodes=nnodes, ml_prefetch=args.ml_prefetch)
+    # Write the configuration
+    # ML nodes: N for updating models, 1 for MolDQN, 1 for inference runs
+    config = theta_nwchem_config(os.path.join(out_dir, 'run-info'), nodes_per_nwchem=args.nodes_per_task,
+                                 total_nodes=nnodes, ml_prefetch=args.ml_prefetch)
 
-            # Save Parsl configuration
-            with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
-                print(str(config), file=fp)
+    # Save Parsl configuration
+    with open(os.path.join(out_dir, 'parsl_config.txt'), 'w') as fp:
+        print(str(config), file=fp)
 
-            # Connect to the redis server
-            client_queues, server_queues = make_queue_pairs(args.redishost, args.redisport,
-                                                            serialization_method="pickle",
-                                                            topics=['simulate', 'screen'],
-                                                            keep_inputs=False)
+    # Connect to the redis server
+    client_queues, server_queues = make_queue_pairs(args.redishost, args.redisport,
+                                                    serialization_method="pickle",
+                                                    topics=['simulate', 'infer', 'train'],
+                                                    keep_inputs=False)
 
-            # Apply wrappers to functions to affix static settings
-            #  Update wrapper changes the __name__ field, which is used by the Method Server
-            #  TODO (wardlt): Have users set the method name explicitly
-            my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types,
-                                       batch_size=512, n_jobs=32)
-            my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
+    # Apply wrappers to functions to affix static settings
+    #  Update wrapper changes the __name__ field, which is used by the Method Server
+    #  TODO (wardlt): Have users set the method name explicitly
+    my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types,
+                               batch_size=512, n_jobs=32)
+    my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
+    
+    my_update_mpnn = partial(update_mpnn, atom_types=atom_types, bond_types=bond_types)
+    my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
 
-            # Create the method server and task generator
-            ml_cfg = {'executors': ['ml']}
-            dft_cfg = {'executors': ['qc']}
-            doer = ParslMethodServer([(my_evaluate_mpnn, ml_cfg), (run_simulation, dft_cfg),
-                                      (update_mpnn, ml_cfg)],
-                                     server_queues, config)
+    # Create the method server and task generator
+    ml_cfg = {'executors': ['ml']}
+    dft_cfg = {'executors': ['qc']}
+    doer = ParslMethodServer([(my_evaluate_mpnn, ml_cfg), (run_simulation, dft_cfg),
+                              (my_update_mpnn, ml_cfg)],
+                             server_queues, config)
 
-            # Connect to MongoDB
-            database = MoleculePropertyDB.from_connection_info()
+    # Connect to MongoDB
+    database = MoleculePropertyDB.from_connection_info(args.mongohost, args.mongoport)
 
-            # Configure the "thinker" application
-            thinker = Thinker(client_queues, database,
-                              args.search_space,
-                              args.search_size,
-                              args.retrain_freq,
-                              models,
-                              args.molecules_per_ml_task,
-                              nnodes,
-                              args.nodes_per_qc_task,
-                              out_dir)
-            logging.info('Created the method server and task generator')
+    # Configure the "thinker" application
+    thinker = Thinker(client_queues, database,
+                      args.search_space,
+                      args.search_size,
+                      args.retrain_frequency,
+                      models,
+                      args.molecules_per_ml_task,
+                      nnodes,
+                      args.nodes_per_task,
+                      out_dir)
+    logging.info('Created the method server and task generator')
 
-            try:
-                # Launch the servers
-                #  The method server is a Thread, so that it can access the Parsl DFK
-                #  The task generator is a Thread, so that all debugging methods get cast to screen
-                doer.start()
-                thinker.start()
-                logging.info(f'Running on {os.getpid()}')
-                logging.info('Launched the servers')
+    try:
+        # Launch the servers
+        #  The method server is a Thread, so that it can access the Parsl DFK
+        #  The task generator is a Thread, so that all debugging methods get cast to screen
+        doer.start()
+        thinker.start()
+        logging.info(f'Running on {os.getpid()}')
+        logging.info('Launched the servers')
 
-                # Wait for the task generator to complete
-                thinker.join()
-                logging.info('Task generator has completed')
-            finally:
-                client_queues.send_kill_signal()
+        # Wait for the task generator to complete
+        thinker.join()
+        logging.info('Task generator has completed')
+    finally:
+        client_queues.send_kill_signal()
 
-            # Wait for the method server to complete
-            doer.join()
+    # Wait for the method server to complete
+    doer.join()
 
 

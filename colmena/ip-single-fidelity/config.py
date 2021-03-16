@@ -51,9 +51,9 @@ conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
                 max_workers=1,
                 prefetch_capacity=ml_prefetch,
                 provider=LocalProvider(
-                    nodes_per_block=total_nodes // nodes_per_nwchem,  # Limits the number of manager processes
+                    nodes_per_block=nodes_per_nwchem,
                     init_blocks=0,
-                    max_blocks=1,
+                    max_blocks=total_nodes // nodes_per_nwchem,  # Limits the number of manager processes,
                     launcher=AprunLauncher(overrides='-d 64 --cc depth'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3
