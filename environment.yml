@@ -20,7 +20,7 @@ dependencies:
   - matplotlib==3.3.3
   - openbabel==3.0.0
   - geometric==0.9.*
-  - qcengine==0.17.*
+  - qcengine==0.18.*
   - rdkit==2019.09.3
   - tensorflow==2.1.0
   - pytorch==1.*
