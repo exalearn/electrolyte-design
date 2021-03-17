@@ -25,6 +25,7 @@ jobs:
       with:
         environment-file: environment.yml
         activate-environment: edw
+        use-mamba: True
     - name: Install dependencies
       run: |
         which python
