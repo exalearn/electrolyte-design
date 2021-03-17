@@ -89,7 +89,7 @@ def relax_structure(xyz: str,
     # Run the relaxation
     if code == "nwchem":
         keywords = {"driver__maxiter": 100, "set__driver:linopt": 0}
-        relax_code = "nwchem_relax"
+        relax_code = "nwchemdriver"
     else:
         keywords = {"program": code}
         relax_code = "geometric"
