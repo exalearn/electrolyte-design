@@ -10,6 +10,4 @@ models=`find $mpnn_dir/smb-ip -name best_model.h5 | sort | head -n 4`
 python run.py --mpnn-config-directory $mpnn_dir \
     --mpnn-model-files $models \
     --search-space $search_space \
-    --nodes-per-task 2 \
-    --retrain-frequency 1 \
     $@

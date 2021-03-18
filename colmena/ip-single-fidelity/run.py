@@ -163,26 +163,29 @@ class Thinker(BaseThinker):
 
             # Gather nodes for training until either training finishes or we have 1 node per model.
             n_allocated = 0
-            while not self.all_training_started.is_set() or n_allocated >= len(self.mpnns):
+            self.all_training_started.clear()
+            while (not self.all_training_started.is_set()) and n_allocated < len(self.mpnns):
                 if self.rec.reallocate('simulation', 'training', self.nodes_per_qc, cancel_if=self.all_training_started):
                     n_allocated += self.nodes_per_qc
-            self.all_training_started.clear()
             self.logger.info('All training tasks have been submitted. Waiting for them to finish before deallocating to inference')
+            self.all_training_started.wait()
+            self.all_training_started.clear()
 
             # Allocate initial nodes for inference
-            #  Blocks until training is complete
+            self.logger.info('Waiting for training tasks to complete.')
             self.rec.reallocate('training', 'inference', self.rec.allocated_slots('training'))
 
             # Trigger inference
             self.logger.info('Beginning inference process. Will gradually scavange nodes from simulation tasks')
             self.start_inference.set()
-            while self.inference_finished.is_set() or self.rec.allocated_slots("simulation") == 0:
+            while not (self.inference_finished.is_set() or self.rec.allocated_slots("simulation") == 0):
                 # Request a block of nodes for inference
                 acq_success = self.rec.reallocate('simulation', 'inference', self.nodes_per_qc, cancel_if=self.inference_finished)
                 self.rec.acquire('inference', self.nodes_per_qc)
                 
                 # Make them available to the task submission thread
                 if acq_success:
+                    self.logger.info(f'Allocated {self.nodes_per_qc} more nodes to inference')
                     for _ in range(self.nodes_per_qc * 2): # 1 execution slot + 1 for prefetch
                         self.inference_slots.release()
             self.inference_finished.wait()
@@ -208,8 +211,10 @@ class Thinker(BaseThinker):
 
     @result_processor(topic='simulate')
     def process_outputs(self, result: Result):
-        # Mark that the resources are available
+        # Get basic task information
         smiles, n_nodes = result.args
+        
+        # Release nodes for use by other processes
         self.rec.release("simulation", n_nodes)
 
         # If successful, add to the database
@@ -224,6 +229,8 @@ class Thinker(BaseThinker):
 
             # Add to database
             self.mongo.update_molecule(data)
+            with open(self.output_dir.joinpath('moldata-records.json'), 'a') as fp:
+                print(json.dumps([datetime.now().timestamp(), data.json()]), file=fp)
             self.database.append(data)
 
             # Write to disk
@@ -242,6 +249,7 @@ class Thinker(BaseThinker):
     def train_models(self):
         """Train machine learning models"""
         self.start_training.clear()
+        self.logger.info('Started retraining')
 
         for mid, model in enumerate(self.mpnns):
             # Wait until we have nodes
@@ -251,6 +259,7 @@ class Thinker(BaseThinker):
             train_data = dict(
                 (d.identifier['smiles'], d.oxidation_potential['smb-vacuum'])
                 for d in self.database
+                if 'smb-vacuum' in d.oxidation_potential
             )
 
             # Make the MPNN message
@@ -271,12 +280,12 @@ class Thinker(BaseThinker):
         with open(self.output_dir.joinpath('training-results.json'), 'a') as fp:
             print(result.json(exclude={'inputs', 'value'}), file=fp)
 
-        # Make sure the data
+        # Make sure the run completed
+        model_id = result.task_info['model_id']
         if not result.success:
-            raise ValueError('Model training failed!')
+            self.logger.warning(f'Training failed for {model_id}')
 
         # Update weights
-        model_id = result.task_info['model_id']
         weights, history = result.value
         self.mpnns[model_id].set_weights(weights)
 
@@ -364,10 +373,10 @@ class Thinker(BaseThinker):
         y_mean = y_pred.mean(axis=1)
         y_std = y_pred.std(axis=1)
 
-        # Rank compounds by different criteria
+        # Rank compounds according to the upper confidence bound
         molecules = self.mols['inchi'].values
-        greedy_list = molecules[np.argsort(-y_mean)].tolist()
-        uncertainty_list = molecules[np.argsort(-y_std)].tolist()
+        ucb = y_mean + y_std
+        best_list = molecules[np.argsort(-ucb)].tolist()
 
         # Gather the search space
         already_searched = [d.identifier['inchi'] for d in self.database]
@@ -377,13 +386,7 @@ class Thinker(BaseThinker):
             self.task_queue = []
             while len(self.task_queue) < self.n_to_evaluate:
                 # Pick a molecule
-                r_choice = random()
-                if r_choice < 0.1:  # Pick the a random entry
-                    mol = choice(molecules)
-                elif r_choice < 0.2:  # Pick an uncertain entry
-                    mol = uncertainty_list.pop()
-                else:  # Get a greedy entry
-                    mol = greedy_list.pop()
+                mol = best_list.pop()
 
                 # Add it to list if not in database or not already in queue
                 if mol not in already_searched and mol not in self.task_queue:
@@ -412,7 +415,7 @@ if __name__ == '__main__':
                         help="Number of new molecules to evaluate during this search")
     parser.add_argument('--retrain-frequency', default=50, type=int,
                         help="Number of completed computations that will trigger a retraining")
-    parser.add_argument("--molecules-per-ml-task", default=10000, type=int,
+    parser.add_argument("--molecules-per-ml-task", default=20000, type=int,
                         help="Number molecules per inference task")
     parser.add_argument("--ml-prefetch", default=1, help="Number of ML tasks to prefech on each node", type=int)
 
