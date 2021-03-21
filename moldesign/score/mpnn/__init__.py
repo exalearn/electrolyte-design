@@ -37,7 +37,7 @@ class MPNNMessage:
     def __getstate__(self):
         """Get all of state except the model"""
         state = self.__dict__.copy()
-        del state['_model']
+        state['_model'] = None
         return state
 
     def get_model(self) -> tf.keras.Model:
@@ -129,7 +129,6 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
             and validation set as the database becomes larger
         learning_rate: Learning rate for the Adam optimizer
         patience: Number of epochs without improvement before terminating training.
-            Default is 25% of the total number of epochs
     Returns:
         model: Updated weights
         history: Training history
