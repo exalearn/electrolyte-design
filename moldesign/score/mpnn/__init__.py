@@ -1,4 +1,5 @@
 """Functions for updating and performing bulk inference using an Keras MPNN model"""
+from pathlib import Path
 from functools import partial
 from typing import List, Dict, Tuple, Union, Optional
 
@@ -53,7 +54,7 @@ class MPNNMessage:
 
 
 # TODO (wardlt): Split into multiple functions? I don't like having so many input type options
-def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List[str]],
+def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List[str], List[Path]],
                   smiles: List[str], atom_types: List[int], bond_types: List[str],
                   batch_size: int = 128, cache: bool = True, n_jobs: Optional[int] = 1) -> np.ndarray:
     """Run inference on a list of molecules
@@ -76,13 +77,13 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
     if isinstance(model_msg[0], MPNNMessage):
         # Unpack the messages
         models = [m.get_model() for m in model_msg]
-    elif isinstance(model_msg[0], str):
+    elif isinstance(model_msg[0], (str, Path)):
         # Load the model from disk
         if cache:
             models = []
             for p in model_msg:
                 if p not in _model_cache:
-                    _model_cache[p] = tf.keras.models.load_model(p, custom_objects=custom_objects)
+                    _model_cache[p] = tf.keras.models.load_model(str(p), custom_objects=custom_objects)
                 models.append(_model_cache[p])
         else:
             models = [tf.keras.models.load_model(p, custom_objects=custom_objects)
@@ -109,7 +110,6 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
     return np.hstack(all_outputs)
 
 
-# TODO (wardlt): The number of input parameters is getting large. Consider
 def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: int,
                 atom_types: List[int], bond_types: List[str], batch_size: int = 512,
                 validation_split: float = 0.1, random_state: int = 1, learning_rate: float = 1e-3,
@@ -136,24 +136,8 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
 
     # Rebuild the model
     model = model_msg.get_model()
-    model.compile(tf.keras.optimizers.Adam(lr=learning_rate), 'mean_absolute_error')
-
-    # Make the callbacks
-    final_learn_rate = learning_rate / 1000
-    init_learn_rate = learning_rate
-    decay_rate = (final_learn_rate / init_learn_rate) ** (1. / (num_epochs - 1))
-    if patience is None:
-        patience = num_epochs // 4
-
-    def lr_schedule(epoch, lr):
-        return lr * decay_rate
-    my_callbacks = [
-        LRLogger(),
-        EpochTimeLogger(),
-        cb.LearningRateScheduler(lr_schedule),
-        cb.EarlyStopping(patience=patience, restore_best_weights=True),
-        cb.TerminateOnNaN()
-    ]
+    if model.optimizer is None:
+        model.compile(tf.keras.optimizers.Adam(lr=learning_rate), 'mean_squared_error')
 
     # Separate the database into molecules and properties
     smiles, y = zip(*database.items())
@@ -169,9 +153,29 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
     smiles = np.array(smiles)
     y = np.array(y)
     train_loader = GraphLoader(smiles[train_split], atom_types, bond_types, y[train_split],
-                               batch_size=batch_size)
+                               batch_size=batch_size, shuffle=True)
     val_loader = GraphLoader(smiles[~train_split], atom_types, bond_types, y[~train_split],
                              batch_size=batch_size, shuffle=False)
+
+    # Make the callbacks
+    final_learn_rate = 1e-6
+    init_learn_rate = learning_rate
+    decay_rate = (final_learn_rate / init_learn_rate) ** (1. / (num_epochs - 1))
+
+    def lr_schedule(epoch, lr):
+        return lr * decay_rate
+
+    if patience is None:
+        patience = num_epochs // 4
+
+    my_callbacks = [
+        LRLogger(),
+        EpochTimeLogger(),
+        cb.LearningRateScheduler(lr_schedule),
+        cb.EarlyStopping(patience=patience, restore_best_weights=True),
+        cb.TerminateOnNaN(),
+        train_loader  # So the shuffling gets called
+    ]
 
     # Run the desired number of epochs
     history = model.fit(train_loader, epochs=num_epochs, validation_data=val_loader,

@@ -246,8 +246,10 @@ def _merge_batch(mols: List[dict]) -> dict:
     return batch
 
 
-class GraphLoader(tf.keras.utils.Sequence):
-    """Keras-compatible data loader for training a graph problem"""
+class GraphLoader(tf.keras.utils.Sequence, tf.keras.callbacks.Callback):
+    """Keras-compatible data loader for training a graph problem
+
+    Styled after the NFP TFv1 data loader: https://github.com/NREL/nfp/blob/0.0.x/nfp/preprocessing/sequence.py"""
 
     def __init__(self, smiles: List[str], atom_types: List[int], bond_types: List[str],
                  outputs: List[float], batch_size: int, shuffle: bool = True, random_state: int = None):
@@ -276,6 +278,11 @@ class GraphLoader(tf.keras.utils.Sequence):
         # Give it a first shuffle, if needed
         self.rng = np.random.RandomState(random_state)
         if shuffle:
+            self.rng.shuffle(self.entries)
+
+    def on_epoch_end(self, epoch=None, log=None):
+        if self.shuffle:
+            # Shuffle the dataset
             self.rng.shuffle(self.entries)
 
     def __getitem__(self, item):
