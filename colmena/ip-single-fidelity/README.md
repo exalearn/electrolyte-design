@@ -52,3 +52,9 @@ Resources are allocated in several phases:
 1. *Simulation*: All resources dedicated to performing the selected simulations.
 1. *Model Updating*: After a specified number of simulations complete, resources are diverted to retraining the model. The agent will reallocate nodes from simulation to training tasks until every training task has started.
 1. *Reprioritization*: Once all models are done training, the nodes are re-tasked to inference. The agent continues to reallocate nodes from simulation to inference until the all inference tasks have completed. The agent then returns to the "simulation" phase.
+
+
+## Change Log
+
+- March 31: Switched to using greedy rather than UCB for the selection criterion
+- April 1: Caught bug in model training. Small numbers of model iterations lead to worsening performance

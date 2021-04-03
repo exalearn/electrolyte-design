@@ -23,7 +23,7 @@ export MPICH_GNI_NDREG_MAXSIZE=16777216
 export MPICH_GNI_MBOX_PLACEMENT=nic
 export MPICH_GNI_LMT_PATH=disabled
 export COMEX_MAX_NB_OUTSTANDING=6
-export LD_LIBRARY_PATH=/opt/intel/compilers_and_libraries_2018.0.128/linux/compiler/lib/intel64_lin:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/opt/intel/compilers_and_libraries_2020.0.166/linux/compiler/lib/intel64_lin:$LD_LIBRARY_PATH
 
 # Copy over the database files
 db_path=/tmp/edw-db-$RANDOM

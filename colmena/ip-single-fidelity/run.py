@@ -2,7 +2,7 @@ from threading import Event, Thread, Semaphore, Lock
 from typing import List, Tuple
 from functools import partial, update_wrapper
 from pathlib import Path
-from random import random, choice
+from random import random, choice, shuffle
 from datetime import datetime
 import argparse
 import logging
@@ -44,7 +44,7 @@ def run_simulation(smiles: str, n_nodes: int) -> Tuple[List[OptimizationResult],
     from moldesign.simulate.functions import generate_inchi_and_xyz, relax_structure, run_single_point
     from moldesign.simulate.specs import get_qcinput_specification
     from qcelemental.models import DriverEnum
-
+    
     # Make the initial geometry
     inchi, xyz = generate_inchi_and_xyz(smiles)
 
@@ -79,7 +79,9 @@ class Thinker(BaseThinker):
                  inference_chunk_size: int,
                  num_nodes: int,
                  nodes_per_qc: int,
-                 output_dir: str):
+                 output_dir: str,
+                 beta: float,
+                 random_order: bool = False):
         """
         Args:
             queues: Queues used to communicate with the method server
@@ -98,6 +100,8 @@ class Thinker(BaseThinker):
         self.nodes_per_qc = nodes_per_qc
         self.mpnns = mpnns.copy()
         self.output_dir = Path(output_dir)
+        self.random = random_order
+        self.beta = beta
 
         # Get the initial database
         cursor = self.mongo.collection.find({output_property: {'$exists': True}})
@@ -123,6 +127,7 @@ class Thinker(BaseThinker):
         self.all_training_started = Event()  # Mark that training has begun
         self.task_queue = []  # Holds a list of tasks for inference
         self.task_queue_lock = Lock()  # Ensures only one thread edits task queue at a time
+        self.inference_batch = 0
 
         # Allocate all resource to inference for the first task
         self.rec.reallocate(None, 'inference', num_nodes)
@@ -138,6 +143,13 @@ class Thinker(BaseThinker):
 
         # Start off by running inference loop
         self.start_inference.set()
+        
+        # If random, just wait for the shuffling to finish
+        if self.random:
+            self.rec.reallocate('inference', 'simulation', self.rec.allocated_slots('inference'))
+            self.logger.info('Beginning to run simulations')
+            self.done.wait()
+            return
 
         # Wait until the inference tasks event to finish
         self.inference_finished.wait()
@@ -146,9 +158,8 @@ class Thinker(BaseThinker):
 
         while not self.done.is_set():
             # Reallocate all resources from inference to QC tasks
-            self.rec.release('inference', self.rec.allocated_slots('inference'))
             self.rec.reallocate('inference', 'simulation', self.rec.allocated_slots('inference'))
-            self.inference_slots = Semaphore()  # Reset the number of inference slots to zero
+            self.inference_slots = Semaphore(value=0)  # Reset the number of inference slots to zero
 
             # Wait until QC tasks complete
             retrain_size = len(self.database) + self.n_complete_before_retrain
@@ -173,8 +184,11 @@ class Thinker(BaseThinker):
 
             # Allocate initial nodes for inference
             self.logger.info('Waiting for training tasks to complete.')
-            self.rec.reallocate('training', 'inference', self.rec.allocated_slots('training'))
-
+            n_to_reallocate = self.rec.allocated_slots('training')
+            self.rec.reallocate('training', 'inference', n_to_reallocate)
+            for _ in range(n_to_reallocate * 2):
+                self.inference_slots.release()
+            
             # Trigger inference
             self.logger.info('Beginning inference process. Will gradually scavange nodes from simulation tasks')
             self.start_inference.set()
@@ -202,12 +216,13 @@ class Thinker(BaseThinker):
 
         # Submit the next task
         with self.task_queue_lock:
-            inchi = self.task_queue.pop()
+            inchi, info = self.task_queue.pop()
             mol = Chem.MolFromInchi(inchi)
             smiles = Chem.MolToSmiles(mol)
             self.logger.info(f'Submitted {smiles} to simulate with NWChem')
-            self.queues.send_inputs(smiles, self.nodes_per_qc,
-                                    method='run_simulation', keep_inputs=True, topic='simulate')
+            self.queues.send_inputs(smiles, self.nodes_per_qc, task_info=info,
+                                    method='run_simulation', keep_inputs=True,
+                                    topic='simulate')
 
     @result_processor(topic='simulate')
     def process_outputs(self, result: Result):
@@ -265,10 +280,10 @@ class Thinker(BaseThinker):
             # Make the MPNN message
             model_msg = MPNNMessage(model)
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
-            self.queues.send_inputs(model_msg, train_data, 8, method='update_mpnn', topic='train',
+            self.queues.send_inputs(model_msg, train_data, 128, method='update_mpnn', topic='train',
                                     task_info={'model_id': mid}, 
                                     keep_inputs=False,
-                                    input_kwargs={'patience': 2, 'random_state': mid})
+                                    input_kwargs={'random_state': mid})
         self.all_training_started.set()
 
     @result_processor(topic='train')
@@ -284,14 +299,16 @@ class Thinker(BaseThinker):
         model_id = result.task_info['model_id']
         if not result.success:
             self.logger.warning(f'Training failed for {model_id}')
+            return
 
         # Update weights
         weights, history = result.value
         self.mpnns[model_id].set_weights(weights)
 
         # Print out some status info
-        best_epoch = np.argmin(history['val_loss'])
-        self.logger.info(f'Model {model_id} has finished training. Best epoch: {best_epoch}')
+        self.logger.info(f'Model {model_id} finished training.')
+        with open(self.output_dir.joinpath('training-history.json'), 'a') as fp:
+            print(repr(history), file=fp)
 
     def launch_inference(self):
         """Submit inference tasks for the yet-unlabelled samples"""
@@ -309,7 +326,7 @@ class Thinker(BaseThinker):
             # Read the model in
             for cid, chunk in enumerate(self.inference_chunks):
                 self.inference_slots.acquire()  # Wait to get a slot
-                self.queues.send_inputs([model_path], chunk['smiles'].tolist(),
+                self.queues.send_inputs([str(model_path)], chunk['smiles'].tolist(),
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
                                         task_info={'chunk_id': cid, 'chunk_size': len(chunk), 'model_id': mid})
@@ -319,6 +336,33 @@ class Thinker(BaseThinker):
     def selector(self):
         """Re-prioritize the machine learning tasks"""
         self.start_inference.clear()
+        
+        # If the random flag is set, just shuffle the list of molecules
+        if self.random:
+            # Get the list of molecules
+            self.logger.info('Shuffling the list of molecules')
+            molecules = self.mols['inchi'].values.tolist()
+            shuffle(molecules)
+            
+            # Gather the search space
+            already_searched = [d.identifier['inchi'] for d in self.database]
+            
+            # Add them to the last queue
+            with self.task_queue_lock:
+                self.task_queue = []
+                while len(self.task_queue) < self.n_to_evaluate:
+                    # Pick a molecule
+                    mol = molecules.pop()
+
+                    # Add it to list if not in database or not already in queue
+                    if mol not in already_searched and mol not in self.task_queue:
+                        self.task_queue.append((mol, {}))
+                    
+            # Release nodes and exist
+            self.logger.info('Done shuffling')
+            self.rec.release('inference', self.rec.allocated_slots('inference'))
+            self.inference_finished.set()
+            return
 
         # Begin the job submission thread
         submit_thread = Thread(target=self.launch_inference)
@@ -345,7 +389,7 @@ class Thinker(BaseThinker):
             # Store the outputs
             chunk_id = result.task_info.get('chunk_id')
             model_id = result.task_info.get('model_id')
-            y_pred[chunk_id][:, model_id] = result.value
+            y_pred[chunk_id][:, model_id] = np.squeeze(result.value)
 
         # Close out the inference thread
         submit_thread.join()
@@ -360,6 +404,7 @@ class Thinker(BaseThinker):
 
         # Mark that inference is complete
         self.inference_finished.set()
+        self.inference_batch += 1
 
     def _select_molecules(self, y_pred):
         """Select a list of molecules given the predictions from each model
@@ -375,8 +420,9 @@ class Thinker(BaseThinker):
 
         # Rank compounds according to the upper confidence bound
         molecules = self.mols['inchi'].values
-        ucb = y_mean + y_std
-        best_list = molecules[np.argsort(-ucb)].tolist()
+        ucb = y_mean + self.beta * y_std
+        best_list = list(zip(molecules[np.argsort(ucb)].tolist(), 
+                             y_mean, y_std))
 
         # Gather the search space
         already_searched = [d.identifier['inchi'] for d in self.database]
@@ -386,11 +432,13 @@ class Thinker(BaseThinker):
             self.task_queue = []
             while len(self.task_queue) < self.n_to_evaluate:
                 # Pick a molecule
-                mol = best_list.pop()
+                mol, mean, std = best_list.pop()
 
                 # Add it to list if not in database or not already in queue
                 if mol not in already_searched and mol not in self.task_queue:
-                    self.task_queue.append(mol)
+                    # Note: coverting to float b/c np.float32 is not JSON serializable
+                    self.task_queue.append((mol, {'mean': float(mean), 'std': float(std),
+                                                  'batch': self.inference_batch}))
         self.logger.info('Updated task list')
 
    
@@ -410,14 +458,16 @@ if __name__ == '__main__':
                         required=True)
     parser.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
     parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
-    parser.add_argument('--nodes-per-task', help='Number of nodes per NWChem task.', default=2, type=int)
+    parser.add_argument('--nodes-per-task', help='Number of nodes per NWChem task.', default=4, type=int)
     parser.add_argument("--search-size", default=1000, type=int,
                         help="Number of new molecules to evaluate during this search")
     parser.add_argument('--retrain-frequency', default=50, type=int,
                         help="Number of completed computations that will trigger a retraining")
-    parser.add_argument("--molecules-per-ml-task", default=20000, type=int,
+    parser.add_argument("--molecules-per-ml-task", default=4096, type=int,
                         help="Number molecules per inference task")
     parser.add_argument("--ml-prefetch", default=1, help="Number of ML tasks to prefech on each node", type=int)
+    parser.add_argument("--random", action='store_true', help="Skip all the ML stuff and just randomly-select tasks")
+    parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. This is the beta from the UCB acquistion function", type=float)
 
     # Parse the arguments
     args = parser.parse_args()
@@ -487,17 +537,18 @@ if __name__ == '__main__':
     #  Update wrapper changes the __name__ field, which is used by the Method Server
     #  TODO (wardlt): Have users set the method name explicitly
     my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types,
-                               batch_size=512, n_jobs=32)
+                               batch_size=256, n_jobs=32)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
     
     my_update_mpnn = partial(update_mpnn, atom_types=atom_types, bond_types=bond_types)
     my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
 
     # Create the method server and task generator
-    ml_cfg = {'executors': ['ml']}
+    inf_cfg = {'executors': ['ml-inference']}
+    tra_cfg = {'executors': ['ml-train']}
     dft_cfg = {'executors': ['qc']}
-    doer = ParslMethodServer([(my_evaluate_mpnn, ml_cfg), (run_simulation, dft_cfg),
-                              (my_update_mpnn, ml_cfg)],
+    doer = ParslMethodServer([(my_evaluate_mpnn, inf_cfg), (run_simulation, dft_cfg),
+                              (my_update_mpnn, tra_cfg)],
                              server_queues, config)
 
     # Connect to MongoDB
@@ -512,7 +563,9 @@ if __name__ == '__main__':
                       args.molecules_per_ml_task,
                       nnodes,
                       args.nodes_per_task,
-                      out_dir)
+                      out_dir,
+                      args.beta,
+                      args.random)
     logging.info('Created the method server and task generator')
 
     try:
@@ -532,5 +585,3 @@ if __name__ == '__main__':
 
     # Wait for the method server to complete
     doer.join()
-
-

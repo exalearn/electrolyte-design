@@ -20,7 +20,7 @@ def theta_nwchem_config(log_dir: str,
         nodes_per_nwchem: Number of nodes per NWChem computation
         log_dir: Path to store monitoring DB and parsl logs
         total_nodes: Total number of nodes available. Default: COBALT_JOBSIZE
-        ml_prefetch: Number of tasks for ML workers to prefect
+        ml_prefetch: Number of tasks for ML workers to prefetch for inference
     Returns:
         (Config) Parsl configuration
     """
@@ -47,14 +47,30 @@ conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
             ),
             HighThroughputExecutor(
                 address=address_by_hostname(),
-                label="ml",
+                label="ml-inference",
                 max_workers=1,
                 prefetch_capacity=ml_prefetch,
                 provider=LocalProvider(
                     nodes_per_block=nodes_per_nwchem,
                     init_blocks=0,
                     max_blocks=total_nodes // nodes_per_nwchem,  # Limits the number of manager processes,
-                    launcher=AprunLauncher(overrides='-d 64 --cc depth'),  # Places worker on the compute node
+                    launcher=AprunLauncher(overrides='-d 256 --cc depth -j 4'),  # Places worker on the compute node
+                    worker_init='''
+module load miniconda-3
+conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
+    ''',
+                ),
+            ),
+            HighThroughputExecutor(
+                address=address_by_hostname(),
+                label="ml-train",
+                max_workers=1,
+                prefetch_capacity=0,
+                provider=LocalProvider(
+                    nodes_per_block=nodes_per_nwchem,
+                    init_blocks=0,
+                    max_blocks=1,  # Limits the number of manager processes,
+                    launcher=AprunLauncher(overrides='-d 256 --cc depth -j 4'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3
 conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
