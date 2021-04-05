@@ -280,7 +280,7 @@ class Thinker(BaseThinker):
             # Make the MPNN message
             model_msg = MPNNMessage(model)
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
-            self.queues.send_inputs(model_msg, train_data, 128, method='update_mpnn', topic='train',
+            self.queues.send_inputs(model_msg, train_data, 64, method='update_mpnn', topic='train',
                                     task_info={'model_id': mid}, 
                                     keep_inputs=False,
                                     input_kwargs={'random_state': mid})
@@ -468,6 +468,8 @@ if __name__ == '__main__':
     parser.add_argument("--ml-prefetch", default=1, help="Number of ML tasks to prefech on each node", type=int)
     parser.add_argument("--random", action='store_true', help="Skip all the ML stuff and just randomly-select tasks")
     parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. This is the beta from the UCB acquistion function", type=float)
+    parser.add_argument("--learning-rate", default=3e-4, help="Learning rate for re-training the models", type=float)
+    
 
     # Parse the arguments
     args = parser.parse_args()
@@ -540,7 +542,7 @@ if __name__ == '__main__':
                                batch_size=256, n_jobs=32)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
     
-    my_update_mpnn = partial(update_mpnn, atom_types=atom_types, bond_types=bond_types)
+    my_update_mpnn = partial(update_mpnn, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate)
     my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
 
     # Create the method server and task generator

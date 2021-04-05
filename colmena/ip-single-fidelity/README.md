@@ -58,3 +58,4 @@ Resources are allocated in several phases:
 
 - March 31: Switched to using greedy rather than UCB for the selection criterion
 - April 1: Caught bug in model training. Small numbers of model iterations lead to worsening performance
+- April 3: Improved the parameters for the model training. Increased learning rate and epochs
