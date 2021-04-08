@@ -113,6 +113,9 @@ class Thinker(BaseThinker):
         # Get the target database size
         self.n_to_evaluate = n_to_evaluate
         self.target_size = n_to_evaluate + len(self.database)
+        
+        # List the molecules that have already been searched
+        self.already_searched = set([d.identifier['inchi'] for d in self.database])
 
         # Prepare search space
         self.mols = pd.read_csv(search_space, delim_whitespace=True)
@@ -220,6 +223,7 @@ class Thinker(BaseThinker):
             mol = Chem.MolFromInchi(inchi)
             smiles = Chem.MolToSmiles(mol)
             self.logger.info(f'Submitted {smiles} to simulate with NWChem')
+            self.already_searched.add(inchi)
             self.queues.send_inputs(smiles, self.nodes_per_qc, task_info=info,
                                     method='run_simulation', keep_inputs=True,
                                     topic='simulate')
@@ -424,8 +428,6 @@ class Thinker(BaseThinker):
         best_list = list(zip(molecules[np.argsort(ucb)].tolist(), 
                              y_mean, y_std))
 
-        # Gather the search space
-        already_searched = [d.identifier['inchi'] for d in self.database]
 
         # Get a list of the molecules
         with self.task_queue_lock:
@@ -435,7 +437,7 @@ class Thinker(BaseThinker):
                 mol, mean, std = best_list.pop()
 
                 # Add it to list if not in database or not already in queue
-                if mol not in already_searched and mol not in self.task_queue:
+                if mol not in self.already_searched and mol not in self.task_queue:
                     # Note: coverting to float b/c np.float32 is not JSON serializable
                     self.task_queue.append((mol, {'mean': float(mean), 'std': float(std),
                                                   'batch': self.inference_batch}))
