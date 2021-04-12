@@ -268,7 +268,7 @@ class GraphLoader(tf.keras.utils.Sequence, tf.keras.callbacks.Callback):
         super(GraphLoader, self).__init__()
 
         # Convert the molecules to MPNN-ready formats
-        mols = [convert_nx_to_dict(convert_smiles_to_nx(s), atom_types, bond_types) for s in smiles]
+        mols = [convert_nx_to_dict(convert_smiles_to_nx(s, add_hs=True), atom_types, bond_types) for s in smiles]
         self.entries = np.array(list(zip(mols, outputs)))
 
         # Other data

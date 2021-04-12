@@ -111,7 +111,7 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 
 
 def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: int,
-                atom_types: List[int], bond_types: List[str], batch_size: int = 512,
+                atom_types: List[int], bond_types: List[str], batch_size: int = 32,
                 validation_split: float = 0.1, random_state: int = 1, learning_rate: float = 1e-3,
                 patience: int = None)\
         -> Tuple[List, dict]:
@@ -166,7 +166,7 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
         return lr * decay_rate
 
     if patience is None:
-        patience = num_epochs // 4
+        patience = num_epochs // 8
 
     my_callbacks = [
         LRLogger(),
@@ -180,4 +180,8 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
     # Run the desired number of epochs
     history = model.fit(train_loader, epochs=num_epochs, validation_data=val_loader,
                         verbose=False, shuffle=False, callbacks=my_callbacks)
+
+    # Check if there is a NaN loss
+    if np.isnan(history.history['loss']).any():
+        raise ValueError('Training failed due to a NaN loss.')
     return [np.array(v) for v in model.get_weights()], history.history
