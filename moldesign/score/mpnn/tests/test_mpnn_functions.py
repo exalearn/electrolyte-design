@@ -1,6 +1,6 @@
 import numpy as np
 
-from moldesign.score.mpnn import MPNNMessage, update_mpnn, evaluate_mpnn
+from moldesign.score.mpnn import MPNNMessage, update_mpnn, evaluate_mpnn, retrain_mpnn
 
 
 def test_train(train_dataset, model, atom_types, bond_types):
@@ -8,6 +8,18 @@ def test_train(train_dataset, model, atom_types, bond_types):
     model_msg = MPNNMessage(model)
     new_weights, history = update_mpnn(model_msg, train_dataset,
                                        2, atom_types, bond_types, validation_split=0.5)
+    assert 'val_loss' in history
+    assert len(new_weights) == len(model_msg.weights)
+
+    # Try training from fresh
+    new_weights, history = retrain_mpnn(model.get_config(), train_dataset,
+                                        2, atom_types, bond_types, validation_split=0.5)
+    assert 'val_loss' in history
+    assert len(new_weights) == len(model_msg.weights)
+
+    # Try training from fresh, with bootstrap
+    new_weights, history = retrain_mpnn(model.get_config(), train_dataset,
+                                        2, atom_types, bond_types, validation_split=0.5, bootstrap=True)
     assert 'val_loss' in history
     assert len(new_weights) == len(model_msg.weights)
 

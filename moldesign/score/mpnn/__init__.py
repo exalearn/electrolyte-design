@@ -112,8 +112,8 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 
 def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: int,
                 atom_types: List[int], bond_types: List[str], batch_size: int = 32,
-                validation_split: float = 0.1, random_state: int = 1, learning_rate: float = 1e-3,
-                patience: int = None)\
+                validation_split: float = 0.1, bootstrap: bool = False,
+                random_state: int = 1, learning_rate: float = 1e-3, patience: int = None)\
         -> Tuple[List, dict]:
     """Update a model with new training sets
 
@@ -125,6 +125,7 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
         num_epochs: Maximum number of epochs to run
         batch_size: Number of molecules per training batch
         validation_split: Fraction of molecules used for the training/validation split
+        bootstrap: Whether to perform a bootstrap sample of the dataset
         random_state: Seed to the random number generator. Ensures entries do not move between train
             and validation set as the database becomes larger
         learning_rate: Learning rate for the Adam optimizer
@@ -134,28 +135,91 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
         history: Training history
     """
 
-    # Rebuild the model
+    # Rebuild the model from message
     model = model_msg.get_model()
+    return _train_model(model, database, num_epochs, atom_types, bond_types, batch_size, validation_split,
+                        bootstrap, random_state, learning_rate, patience)
+
+
+def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int,
+                 atom_types: List[int], bond_types: List[str], batch_size: int = 32,
+                 validation_split: float = 0.1, bootstrap: bool = False,
+                 random_state: int = 1, learning_rate: float = 1e-3,
+                 patience: int = None) -> Tuple[List, dict]:
+    """Train a model from initialized weights
+
+    Args:
+        model_config: Serialized version of the model
+        database: Training dataset of molecule mapped to a property
+        atom_types: List of known atom types
+        bond_types: List of known bond types
+        num_epochs: Maximum number of epochs to run
+        batch_size: Number of molecules per training batch
+        validation_split: Fraction of molecules used for the training/validation split
+        bootstrap: Whether to perform a bootstrap sample of the dataset
+        random_state: Seed to the random number generator. Ensures entries do not move between train
+            and validation set as the database becomes larger
+        learning_rate: Learning rate for the Adam optimizer
+        patience: Number of epochs without improvement before terminating training.
+    Returns:
+        model: Updated weights
+        history: Training history
+    """
+
+    model = tf.keras.models.Model.from_config(model_config, custom_objects=custom_objects)
+    return _train_model(model, database, num_epochs, atom_types, bond_types, batch_size, validation_split,
+                        bootstrap, random_state, learning_rate, patience)
+
+
+def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: int,
+                 atom_types: List[int], bond_types: List[str], batch_size: int = 32,
+                 validation_split: float = 0.1, bootstrap: bool = False,
+                 random_state: int = 1, learning_rate: float = 1e-3,
+                 patience: int = None) -> Tuple[List, dict]:
+    """Train a model
+
+    Args:
+        model: Model to be trained
+        database: Training dataset of molecule mapped to a property
+        atom_types: List of known atom types
+        bond_types: List of known bond types
+        num_epochs: Maximum number of epochs to run
+        batch_size: Number of molecules per training batch
+        validation_split: Fraction of molecules used for the training/validation split
+        bootstrap: Whether to perform a bootstrap sample of the dataset
+        random_state: Seed to the random number generator. Ensures entries do not move between train
+            and validation set as the database becomes larger
+        learning_rate: Learning rate for the Adam optimizer
+        patience: Number of epochs without improvement before terminating training.
+    Returns:
+        model: Updated weights
+        history: Training history
+    """
     if model.optimizer is None:
         model.compile(tf.keras.optimizers.Adam(lr=learning_rate), 'mean_squared_error')
 
     # Separate the database into molecules and properties
     smiles, y = zip(*database.items())
-
-    # Make the training and validation splits
-    #  Use a random number generator with fixed seed to ensure that the validation
-    #  set is never polluted with entries from the training set
-    # TODO (wardlt): Replace with passing train and validation separately?
-    rng = np.random.RandomState(random_state)
-    train_split = rng.rand(len(smiles)) > validation_split
-
-    # Make the loaders
     smiles = np.array(smiles)
     y = np.array(y)
-    train_loader = GraphLoader(smiles[train_split], atom_types, bond_types, y[train_split],
-                               batch_size=batch_size, shuffle=True)
-    val_loader = GraphLoader(smiles[~train_split], atom_types, bond_types, y[~train_split],
-                             batch_size=batch_size, shuffle=False)
+
+    # Make the training and validation splits
+    rng = np.random.RandomState(random_state)
+    train_split = rng.rand(len(smiles)) > validation_split
+    train_X = smiles[train_split]
+    train_y = y[train_split]
+    valid_X = smiles[~train_split]
+    valid_y = y[~train_split]
+
+    # Perform a bootstrap sample of the training data
+    if bootstrap:
+        sample = rng.choice(len(train_X), size=(len(train_X),), replace=True)
+        train_X = train_X[sample]
+        train_y = train_y[sample]
+
+    # Make the training data loaders
+    train_loader = GraphLoader(train_X, atom_types, bond_types, train_y, batch_size=batch_size, shuffle=True)
+    val_loader = GraphLoader(valid_X, atom_types, bond_types, valid_y, batch_size=batch_size, shuffle=False)
 
     # Make the callbacks
     final_learn_rate = 1e-6

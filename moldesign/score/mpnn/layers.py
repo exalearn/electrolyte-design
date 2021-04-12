@@ -293,5 +293,6 @@ class DenormalizeLayer(layers.Layer):
 custom_objects = {
     'GraphNetwork': GraphNetwork,
     'MessageBlock': MessageBlock,
-    'Squeeze': Squeeze
+    'Squeeze': Squeeze,
+    'DenormalizeLayer': DenormalizeLayer
 }
