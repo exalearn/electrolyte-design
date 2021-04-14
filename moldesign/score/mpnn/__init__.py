@@ -166,7 +166,17 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
         history: Training history
     """
 
+    # Make a copy of the model
     model = tf.keras.models.Model.from_config(model_config, custom_objects=custom_objects)
+
+    # Define initial guesses for the "scaling" later
+    try:
+        scale_layer = model.get_layer('scale')
+        outputs = np.array(list(database.values()))
+        scale_layer.set_weights([outputs.std()[None, None], outputs.mean()[None]])
+    except ValueError:
+        pass
+
     return _train_model(model, database, num_epochs, atom_types, bond_types, batch_size, validation_split,
                         bootstrap, random_state, learning_rate, patience)
 
