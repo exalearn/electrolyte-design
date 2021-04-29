@@ -23,7 +23,7 @@ from colmena.thinker.resources import ResourceCounter
 from qcelemental.models import OptimizationResult, AtomicResult, DriverEnum
 
 from config import theta_nwchem_config
-from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, MPNNMessage, custom_objects
+from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, MPNNMessage, custom_objects
 from moldesign.store.models import MoleculeData
 from moldesign.store.mongo import MoleculePropertyDB
 from moldesign.utils import get_platform_info
@@ -75,6 +75,7 @@ class Thinker(BaseThinker):
                  search_space: Path,
                  n_to_evaluate: int,
                  n_complete_before_retrain: int,
+                 retrain_from_initial: bool,
                  mpnns: List[tf.keras.Model],
                  inference_chunk_size: int,
                  num_nodes: int,
@@ -88,6 +89,7 @@ class Thinker(BaseThinker):
             database: Link to the MongoDB instance used to store results
             search_space: Path to a search space of molecules to evaluate
             n_complete_before_retrain: Number of simulations to complete before retraining
+            retrain_from_initial: WHether to update the model or retrain it from initial weights
             mpnns: List of MPNNs to use for selecting samples
             output_dir:
         """
@@ -97,6 +99,7 @@ class Thinker(BaseThinker):
         self.mongo = database
         self.inference_chunk_size = inference_chunk_size
         self.n_complete_before_retrain = n_complete_before_retrain
+        self.retrain_from_initial = retrain_from_initial
         self.nodes_per_qc = nodes_per_qc
         self.mpnns = mpnns.copy()
         self.output_dir = Path(output_dir)
@@ -282,12 +285,18 @@ class Thinker(BaseThinker):
             )
 
             # Make the MPNN message
-            model_msg = MPNNMessage(model)
+            if self.retrain_from_initial:
+                self.queues.send_inputs(model.get_config(), train_data, method='retrain_mpnn', topic='train',
+                                        task_info={'model_id': mid, 'molecules': list(train_data.keys())}, 
+                                        keep_inputs=False,
+                                        input_kwargs={'random_state': mid})
+            else:
+                model_msg = MPNNMessage(model)
+                self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
+                                        task_info={'model_id': mid, 'molecules': list(train_data.keys())}, 
+                                        keep_inputs=False,
+                                        input_kwargs={'random_state': mid})
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
-            self.queues.send_inputs(model_msg, train_data, 64, method='update_mpnn', topic='train',
-                                    task_info={'model_id': mid}, 
-                                    keep_inputs=False,
-                                    input_kwargs={'random_state': mid})
         self.all_training_started.set()
 
     @result_processor(topic='train')
@@ -308,6 +317,11 @@ class Thinker(BaseThinker):
         # Update weights
         weights, history = result.value
         self.mpnns[model_id].set_weights(weights)
+        
+        # Save the model   # COMMENTED OUT DUE TO PERFORMANCE Problems?
+        #model_folder = self.output_dir.joinpath('models')
+        #model_folder.mkdir(exist_ok=True)
+        #self.mpnns[model_id].save(model_folder.joinpath(f'model-{model_id}_t{self.inference_batch}.h5'))
 
         # Print out some status info
         self.logger.info(f'Model {model_id} finished training.')
@@ -459,6 +473,7 @@ if __name__ == '__main__':
     parser.add_argument('--mpnn-config-directory', help='Directory containing the MPNN-related JSON files',
                         required=True)
     parser.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
+    parser.add_argument('--retrain-from-scratch', action='store_true', help='Path to the MPNN h5 files')
     parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
     parser.add_argument('--nodes-per-task', help='Number of nodes per NWChem task.', default=4, type=int)
     parser.add_argument("--search-size", default=1000, type=int,
@@ -471,6 +486,8 @@ if __name__ == '__main__':
     parser.add_argument("--random", action='store_true', help="Skip all the ML stuff and just randomly-select tasks")
     parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. This is the beta from the UCB acquistion function", type=float)
     parser.add_argument("--learning-rate", default=3e-4, help="Learning rate for re-training the models", type=float)
+    parser.add_argument('--num-epochs', default=64, type=int, help='Maximum number of epochs for the model training')
+    parser.add_argument('--no-bootstrap', action='store_true', help='Whether to skip bootstrap sampling for model (re)training')
     
 
     # Parse the arguments
@@ -544,15 +561,18 @@ if __name__ == '__main__':
                                batch_size=256, n_jobs=32)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
     
-    my_update_mpnn = partial(update_mpnn, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate)
+    my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate, bootstrap=not args.no_bootstrap)
     my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
+    
+    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate, bootstrap=not args.no_bootstrap)
+    my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
     # Create the method server and task generator
     inf_cfg = {'executors': ['ml-inference']}
     tra_cfg = {'executors': ['ml-train']}
     dft_cfg = {'executors': ['qc']}
     doer = ParslMethodServer([(my_evaluate_mpnn, inf_cfg), (run_simulation, dft_cfg),
-                              (my_update_mpnn, tra_cfg)],
+                              (my_update_mpnn, tra_cfg), (my_retrain_mpnn, tra_cfg)],
                              server_queues, config)
 
     # Connect to MongoDB
@@ -563,6 +583,7 @@ if __name__ == '__main__':
                       args.search_space,
                       args.search_size,
                       args.retrain_frequency,
+                      args.retrain_from_scratch,
                       models,
                       args.molecules_per_ml_task,
                       nnodes,
