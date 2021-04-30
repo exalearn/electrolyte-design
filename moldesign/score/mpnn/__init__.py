@@ -205,8 +205,9 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
         model: Updated weights
         history: Training history
     """
-    if model.optimizer is None:
-        model.compile(tf.keras.optimizers.Adam(lr=learning_rate), 'mean_squared_error')
+    # Compile the model with a new optimizer
+    #  We find that it is best to reset the optimizer before updating
+    model.compile(tf.keras.optimizers.Adam(lr=learning_rate), 'mean_squared_error')
 
     # Separate the database into molecules and properties
     smiles, y = zip(*database.items())
@@ -258,4 +259,12 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
     # Check if there is a NaN loss
     if np.isnan(history.history['loss']).any():
         raise ValueError('Training failed due to a NaN loss.')
-    return [np.array(v) for v in model.get_weights()], history.history
+
+    # Convert weights to numpy arrays (avoids mmap issues)
+    weights = []
+    for v in model.get_weights():
+        v = np.array(v)
+        if np.isnan(v).any():
+            raise ValueError('Found some NaN weights.')
+        weights.append(v)
+    return weights, history.history
