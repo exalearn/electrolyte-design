@@ -29,4 +29,14 @@ conda env create --file environment.yml --force
 
 The environment should be run on a Linux system.
 Detailed installation instructions will be provided
-after merging this project with [Colmena](https://colmena.readthedocs.io/en/latest/installation.html).  
+after merging this project with [Colmena](https://colmena.readthedocs.io/en/latest/installation.html). 
+
+## Running Workflows
+
+The `colmena` folder contains the run scripts for different design applications, each housed in different directories.
+Each directory contains the necessary run files and a README. 
+
+Specific applications include:
+
+- `ip-single-fidelity`: The application studied in our SC21 submission
+- `atomization-energy-no-retrain`: The test application used to evaluate scaling of inference tasks
