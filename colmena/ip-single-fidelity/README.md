@@ -5,6 +5,12 @@ It works by first using an ensemble of message passing neural networks (MPNN) to
 We feed these predictions and uncertaintities to an experimental design algorithm to prioritize the molecules for which we should compute the IP.
 We update the models as IP computations are completed and use the updated models to reprioritize our list of computations.
 
+## Running
+
+This code is designed to be run on Theta at ALCF. The application is configured by passing arguments to `run.sh` via `qsub`, which are then passed to `run.py` along with some hard-coded settings (e.g., specific models to use, optimized batch sizes).
+
+Example: `qsub -n 256 -t 360 run.sh --retrain-frequency 8`
+
 ## Implementation
 
 Our application broken into 6 "agent" threads that manage training machine learning models, 
