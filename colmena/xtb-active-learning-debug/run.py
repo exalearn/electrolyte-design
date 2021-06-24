@@ -42,7 +42,6 @@ def run_simulation(smiles: str) -> Tuple[List[OptimizationResult], List[AtomicRe
     """
     from moldesign.simulate.functions import generate_inchi_and_xyz, relax_structure, run_single_point
     from moldesign.simulate.specs import get_qcinput_specification
-    from qcelemental.models import DriverEnum
     
     # Make the initial geometry
     inchi, xyz = generate_inchi_and_xyz(smiles)
@@ -52,12 +51,12 @@ def run_simulation(smiles: str) -> Tuple[List[OptimizationResult], List[AtomicRe
 
     # Compute the neutral geometry and hessian
     neutral_xyz, _, neutral_relax = relax_structure(xyz, spec, charge=0, code=code)
-    #neutral_hessian = run_single_point(neutral_xyz, DriverEnum.hessian, spec, charge=0, code=code)
+    # neutral_hessian = run_single_point(neutral_xyz, DriverEnum.hessian, spec, charge=0, code=code)
 
     # Compute the relaxed geometry
     oxidized_xyz, _, oxidized_relax = relax_structure(neutral_xyz, spec, charge=1, code=code)
-    #oxidized_hessian = run_single_point(oxidized_xyz, DriverEnum.hessian, spec, charge=1, code=code)
-    return [neutral_relax, oxidized_relax], []#, [neutral_hessian, oxidized_hessian]
+    # oxidized_hessian = run_single_point(oxidized_xyz, DriverEnum.hessian, spec, charge=1, code=code)
+    return [neutral_relax, oxidized_relax], []  # , [neutral_hessian, oxidized_hessian]
 
 
 class Thinker(BaseThinker):
@@ -72,16 +71,19 @@ class Thinker(BaseThinker):
                  mpnns: List[tf.keras.Model],
                  inference_chunk_size: int,
                  output_dir: str,
-                 beta: float):
+                 beta: float,
+                 random_seed: int = 0):
         """
         Args:
             queues: Queues used to communicate with the method server
             database: Link to the MongoDB instance used to store results
             search_space: Path to a search space of molecules to evaluate
             n_complete_before_retrain: Number of simulations to complete before retraining
-            retrain_from_initial: WHether to update the model or retrain it from initial weights
+            retrain_from_initial: Whether to update the model or retrain it from initial weights
             mpnns: List of MPNNs to use for selecting samples
-            output_dir:
+            output_dir: Where to write the output files
+            beta: Amount to weight uncertainty in the activiation function
+            random_seed: Random seed for the model (re)trainings
         """
         super().__init__(queues, ResourceCounter(1, ['training', 'inference', 'simulation']), daemon=True)
 
@@ -93,6 +95,7 @@ class Thinker(BaseThinker):
         self.output_dir = Path(output_dir)
         self.beta = beta
         self.nodes_per_qc = 1
+        self.random_seed = random_seed
 
         # Get the initial database
         self.database = database
@@ -160,9 +163,11 @@ class Thinker(BaseThinker):
             n_allocated = 0
             self.all_training_started.clear()
             while (not self.all_training_started.is_set()) and n_allocated < len(self.mpnns):
-                if self.rec.reallocate('simulation', 'training', self.nodes_per_qc, cancel_if=self.all_training_started):
+                if self.rec.reallocate('simulation', 'training', self.nodes_per_qc,
+                                       cancel_if=self.all_training_started):
                     n_allocated += self.nodes_per_qc
-            self.logger.info('All training tasks have been submitted. Waiting for them to finish before deallocating to inference')
+            self.logger.info('All training tasks have been submitted.'
+                             ' Waiting for them to finish before deallocating to inference')
             self.all_training_started.wait()
             self.all_training_started.clear()
 
@@ -174,11 +179,12 @@ class Thinker(BaseThinker):
                 self.inference_slots.release()
             
             # Trigger inference
-            self.logger.info('Beginning inference process. Will gradually scavange nodes from simulation tasks')
+            self.logger.info('Beginning inference process. Will gradually scavenge nodes from simulation tasks')
             self.start_inference.set()
             while not (self.inference_finished.is_set() or self.rec.allocated_slots("simulation") == 0):
                 # Request a block of nodes for inference
-                acq_success = self.rec.reallocate('simulation', 'inference', self.nodes_per_qc, cancel_if=self.inference_finished)
+                acq_success = self.rec.reallocate('simulation', 'inference', self.nodes_per_qc,
+                                                  cancel_if=self.inference_finished)
                 self.rec.acquire('inference', self.nodes_per_qc)
                 
                 # Make them available to the task submission thread
@@ -233,7 +239,6 @@ class Thinker(BaseThinker):
             if len(self.database) >= self.target_size:
                 self.logger.info(f'Database has reached target size of {len(self.database)}. Exiting')
                 self.done.set()
-                
 
             # Write to disk
             with open(self.output_dir.joinpath('qcfractal-records.json'), 'a') as fp:
@@ -269,13 +274,13 @@ class Thinker(BaseThinker):
                 self.queues.send_inputs(model.get_config(), train_data, method='retrain_mpnn', topic='train',
                                         task_info={'model_id': mid, 'molecules': list(train_data.keys())}, 
                                         keep_inputs=False,
-                                        input_kwargs={'random_state': mid})
+                                        input_kwargs={'random_state': mid + self.random_seed})
             else:
                 model_msg = MPNNMessage(model)
                 self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
                                         task_info={'model_id': mid, 'molecules': list(train_data.keys())}, 
                                         keep_inputs=False,
-                                        input_kwargs={'random_state': mid})
+                                        input_kwargs={'random_state': mid + self.random_seed})
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
         self.all_training_started.set()
 
@@ -435,6 +440,7 @@ if __name__ == '__main__':
     parser.add_argument("--learning-rate", default=3e-4, help="Initial Learning rate for re-training the models", type=float)
     parser.add_argument('--num-epochs', default=512, type=int, help='Maximum number of epochs for the model training')
     parser.add_argument('--batch-size', default=64, type=int, help='Batch size for model training')
+    parser.add_argument('--random-seed', default=0, type=int, help='Random seed for model (re)trainings')
 
     # Parse the arguments
     args = parser.parse_args()
@@ -531,7 +537,8 @@ if __name__ == '__main__':
                       models,
                       args.molecules_per_ml_task,
                       out_dir,
-                      args.beta)
+                      args.beta,
+                      args.random_seed)
     logging.info('Created the method server and task generator')
 
     try:
