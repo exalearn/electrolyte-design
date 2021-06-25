@@ -1,8 +1,7 @@
 from threading import Event, Thread, Semaphore, Lock
-from typing import List, Tuple
+from typing import List
 from functools import partial, update_wrapper
 from pathlib import Path
-from random import random, choice, shuffle
 from datetime import datetime
 import argparse
 import logging
@@ -20,43 +19,16 @@ from colmena.models import Result
 from colmena.redis.queue import ClientQueues, make_queue_pairs
 from colmena.thinker import BaseThinker, agent, result_processor, event_responder, task_submitter
 from colmena.thinker.resources import ResourceCounter
-from qcelemental.models import OptimizationResult, AtomicResult
 
 from config import local_config
 from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, MPNNMessage, custom_objects
 from moldesign.store.models import MoleculeData
 from moldesign.store.recipes import apply_recipes
 from moldesign.utils import get_platform_info
+from sim import run_simulation
 
 # Hard-coded property values
 output_property = 'oxidation_potential.xtb-vacuum'
-
-
-def run_simulation(smiles: str) -> Tuple[List[OptimizationResult], List[AtomicResult]]:
-    """Run the ionization potential computation
-
-    Args:
-        smiles: SMILES string to evaluate
-    Returns:
-        Relax records for the neutral and ionized geometry
-    """
-    from moldesign.simulate.functions import generate_inchi_and_xyz, relax_structure, run_single_point
-    from moldesign.simulate.specs import get_qcinput_specification
-    
-    # Make the initial geometry
-    inchi, xyz = generate_inchi_and_xyz(smiles)
-
-    # Get the specification and make it more resilient
-    spec, code = get_qcinput_specification('xtb')
-
-    # Compute the neutral geometry and hessian
-    neutral_xyz, _, neutral_relax = relax_structure(xyz, spec, charge=0, code=code)
-    # neutral_hessian = run_single_point(neutral_xyz, DriverEnum.hessian, spec, charge=0, code=code)
-
-    # Compute the relaxed geometry
-    oxidized_xyz, _, oxidized_relax = relax_structure(neutral_xyz, spec, charge=1, code=code)
-    # oxidized_hessian = run_single_point(oxidized_xyz, DriverEnum.hessian, spec, charge=1, code=code)
-    return [neutral_relax, oxidized_relax], []  # , [neutral_hessian, oxidized_hessian]
 
 
 class Thinker(BaseThinker):
@@ -202,7 +174,7 @@ class Thinker(BaseThinker):
 
         # Submit the next task
         with self.task_queue_lock:
-            inchi, info = self.task_queue.pop()
+            inchi, info = self.task_queue.pop(0)
             mol = Chem.MolFromInchi(inchi)
             smiles = Chem.MolToSmiles(mol)
             self.logger.info(f'Submitted {smiles} to simulate with NWChem')
@@ -397,20 +369,21 @@ class Thinker(BaseThinker):
         # Rank compounds according to the upper confidence bound
         molecules = self.mols['inchi'].values
         ucb = y_mean + self.beta * y_std
-        best_list = list(zip(molecules[np.argsort(ucb)].tolist(), 
-                             y_mean, y_std))
+        sort_ids = np.argsort(ucb)
+        best_list = list(zip(molecules[sort_ids].tolist(),
+                             y_mean[sort_ids], y_std[sort_ids], ucb[sort_ids]))
 
         # Get a list of the molecules
         with self.task_queue_lock:
             self.task_queue = []
             while len(self.task_queue) < self.n_to_evaluate:
                 # Pick a molecule
-                mol, mean, std = best_list.pop()
+                mol, mean, std, ucb = best_list.pop()
 
                 # Add it to list if not in database or not already in queue
                 if mol not in self.already_searched and mol not in self.task_queue:
-                    # Note: coverting to float b/c np.float32 is not JSON serializable
-                    self.task_queue.append((mol, {'mean': float(mean), 'std': float(std),
+                    # Note: converting to float b/c np.float32 is not JSON serializable
+                    self.task_queue.append((mol, {'mean': float(mean), 'std': float(std), 'ucb': float(ucb),
                                                   'batch': self.inference_batch}))
         self.logger.info('Updated task list')
 
