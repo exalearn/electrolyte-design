@@ -267,4 +267,7 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
         if np.isnan(v).any():
             raise ValueError('Found some NaN weights.')
         weights.append(v)
+
+    # Once we are finished training call "clear_session"
+    tf.keras.backend.clear_session()
     return weights, history.history
