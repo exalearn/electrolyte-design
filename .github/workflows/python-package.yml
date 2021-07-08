@@ -24,7 +24,9 @@ jobs:
       uses: conda-incubator/setup-miniconda@v2.0.0
       with:
         environment-file: environment.yml
+        channels: conda-forge,defaults,intel
         activate-environment: edw
+        mamba-version: "*"
     - name: Install dependencies
       run: |
         which python
