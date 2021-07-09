@@ -34,7 +34,7 @@ mongod --dbpath $db_path --port $mongoport &> mongo.out &
 mongo=$!
 
 # Start the redis-server
-port=63${RANDOM::2}
+port=631${RANDOM::2}
 redis-server --port $port &> redis.out &
 redis=$!
 
