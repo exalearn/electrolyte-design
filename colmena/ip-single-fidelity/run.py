@@ -81,8 +81,7 @@ class Thinker(BaseThinker):
                  num_nodes: int,
                  nodes_per_qc: int,
                  output_dir: str,
-                 beta: float,
-                 random_order: bool = False):
+                 beta: float):
         """
         Args:
             queues: Queues used to communicate with the method server
@@ -103,7 +102,6 @@ class Thinker(BaseThinker):
         self.nodes_per_qc = nodes_per_qc
         self.mpnns = mpnns.copy()
         self.output_dir = Path(output_dir)
-        self.random = random_order
         self.beta = beta
 
         # Get the initial database
@@ -149,13 +147,6 @@ class Thinker(BaseThinker):
 
         # Start off by running inference loop
         self.start_inference.set()
-        
-        # If random, just wait for the shuffling to finish
-        if self.random:
-            self.rec.reallocate('inference', 'simulation', self.rec.allocated_slots('inference'))
-            self.logger.info('Beginning to run simulations')
-            self.done.wait()
-            return
 
         # Wait until the inference tasks event to finish
         self.inference_finished.wait()
@@ -222,10 +213,10 @@ class Thinker(BaseThinker):
 
         # Submit the next task
         with self.task_queue_lock:
-            inchi, info = self.task_queue.pop()
+            inchi, info = self.task_queue.pop(0)
             mol = Chem.MolFromInchi(inchi)
             smiles = Chem.MolToSmiles(mol)
-            self.logger.info(f'Submitted {smiles} to simulate with NWChem')
+            self.logger.info(f'Submitted {smiles} to simulate with NWChem. Run score: {info["ucb"]}')
             self.already_searched.add(inchi)
             self.queues.send_inputs(smiles, self.nodes_per_qc, task_info=info,
                                     method='run_simulation', keep_inputs=True,
@@ -338,7 +329,7 @@ class Thinker(BaseThinker):
         # Submit the chunks to the workflow engine
         for mid, model in enumerate(self.mpnns):
             # Save the current model to disk
-            model_path = model_folder.joinpath(f'model-{mid}.h5')
+            model_path = model_folder.joinpath(f'model-{mid}-{self.inference_batch}.h5')
             model.save(model_path)
             
             # Read the model in
@@ -355,33 +346,6 @@ class Thinker(BaseThinker):
         """Re-prioritize the machine learning tasks"""
         self.start_inference.clear()
         
-        # If the random flag is set, just shuffle the list of molecules
-        if self.random:
-            # Get the list of molecules
-            self.logger.info('Shuffling the list of molecules')
-            molecules = self.mols['inchi'].values.tolist()
-            shuffle(molecules)
-            
-            # Gather the search space
-            already_searched = [d.identifier['inchi'] for d in self.database]
-            
-            # Add them to the last queue
-            with self.task_queue_lock:
-                self.task_queue = []
-                while len(self.task_queue) < self.n_to_evaluate:
-                    # Pick a molecule
-                    mol = molecules.pop()
-
-                    # Add it to list if not in database or not already in queue
-                    if mol not in already_searched and mol not in self.task_queue:
-                        self.task_queue.append((mol, {}))
-                    
-            # Release nodes and exist
-            self.logger.info('Done shuffling')
-            self.rec.release('inference', self.rec.allocated_slots('inference'))
-            self.inference_finished.set()
-            return
-
         # Begin the job submission thread
         submit_thread = Thread(target=self.launch_inference)
         submit_thread.start()
@@ -439,21 +403,21 @@ class Thinker(BaseThinker):
         # Rank compounds according to the upper confidence bound
         molecules = self.mols['inchi'].values
         ucb = y_mean + self.beta * y_std
-        best_list = list(zip(molecules[np.argsort(ucb)].tolist(), 
-                             y_mean, y_std))
-
+        sort_ids = np.argsort(ucb)
+        best_list = list(zip(molecules[sort_ids].tolist(),
+                             y_mean[sort_ids], y_std[sort_ids], ucb[sort_ids]))
 
         # Get a list of the molecules
         with self.task_queue_lock:
             self.task_queue = []
             while len(self.task_queue) < self.n_to_evaluate:
                 # Pick a molecule
-                mol, mean, std = best_list.pop()
+                mol, mean, std, ucb = best_list.pop()
 
                 # Add it to list if not in database or not already in queue
                 if mol not in self.already_searched and mol not in self.task_queue:
-                    # Note: coverting to float b/c np.float32 is not JSON serializable
-                    self.task_queue.append((mol, {'mean': float(mean), 'std': float(std),
+                    # Note: converting to float b/c np.float32 is not JSON serializable
+                    self.task_queue.append((mol, {'mean': float(mean), 'std': float(std), 'ucb': float(ucb),
                                                   'batch': self.inference_batch}))
         self.logger.info('Updated task list')
 
@@ -478,17 +442,14 @@ if __name__ == '__main__':
     parser.add_argument('--nodes-per-task', help='Number of nodes per NWChem task.', default=4, type=int)
     parser.add_argument("--search-size", default=1000, type=int,
                         help="Number of new molecules to evaluate during this search")
-    parser.add_argument('--retrain-frequency', default=50, type=int,
+    parser.add_argument('--retrain-frequency', default=8, type=int,
                         help="Number of completed computations that will trigger a retraining")
     parser.add_argument("--molecules-per-ml-task", default=4096, type=int,
                         help="Number molecules per inference task")
     parser.add_argument("--ml-prefetch", default=1, help="Number of ML tasks to prefech on each node", type=int)
-    parser.add_argument("--random", action='store_true', help="Skip all the ML stuff and just randomly-select tasks")
     parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. This is the beta from the UCB acquistion function", type=float)
-    parser.add_argument("--learning-rate", default=3e-4, help="Learning rate for re-training the models", type=float)
-    parser.add_argument('--num-epochs', default=64, type=int, help='Maximum number of epochs for the model training')
-    parser.add_argument('--no-bootstrap', action='store_true', help='Whether to skip bootstrap sampling for model (re)training')
-    
+    parser.add_argument("--learning-rate", default=1e-3, help="Learning rate for re-training the models", type=float)
+    parser.add_argument('--num-epochs', default=512, type=int, help='Maximum number of epochs for the model training')
 
     # Parse the arguments
     args = parser.parse_args()
@@ -561,10 +522,10 @@ if __name__ == '__main__':
                                batch_size=256, n_jobs=32)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
     
-    my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate, bootstrap=not args.no_bootstrap)
+    my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate, bootstrap=True)
     my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
     
-    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate, bootstrap=not args.no_bootstrap)
+    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, atom_types=atom_types, bond_types=bond_types, learning_rate=args.learning_rate, bootstrap=True)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
     # Create the method server and task generator
@@ -589,8 +550,7 @@ if __name__ == '__main__':
                       nnodes,
                       args.nodes_per_task,
                       out_dir,
-                      args.beta,
-                      args.random)
+                      args.beta)
     logging.info('Created the method server and task generator')
 
     try:

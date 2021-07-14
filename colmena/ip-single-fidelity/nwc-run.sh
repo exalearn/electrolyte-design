@@ -6,7 +6,7 @@ mpnn_dir=/lus/theta-fs0/projects/CSC249ADCD08/edw/ai-components/sc-2021/mpnn
 search_space=/lus/theta-fs0/projects/CSC249ADCD08/edw/ai-components/search-spaces/QM9-search.tsv
 
 
-models=`find $mpnn_dir/smb-ip -name best_model.h5 | sort | head -n 4`
+models=`find $mpnn_dir/smb-ip -name best_model.h5 | sort`
 python run.py --mpnn-config-directory $mpnn_dir \
     --mpnn-model-files $models \
     --search-space $search_space \
