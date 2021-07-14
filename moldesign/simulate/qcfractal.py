@@ -424,9 +424,11 @@ class SinglePointDataset(QCFractalWrapper):
         methods = self.coll.list_records()
         assert len(methods) == 1, 'We should have exactly one method per dataset'
         method = methods.iloc[0]['method']
+        basis = methods.iloc[0]['basis']
+        kwds = methods.iloc[0]['keywords']
 
         # Get the records
-        records = self.coll.get_records(method=method).iloc[:, 0]
+        records = self.coll.get_records(method=method, basis=basis, keywords=kwds).iloc[:, 0]
         logger.info(f'Pulled {len(records)} records for {self.coll.name}')
 
         # Get only those which have completed
