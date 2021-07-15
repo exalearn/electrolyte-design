@@ -647,7 +647,7 @@ class HessianDataset(SinglePointDataset):
 
 
 def collect_molecular_properties(energy_data: Union[GeometryDataset, SinglePointDataset],
-                                 solvation_data: SolvationEnergyDataset,
+                                 solvation_data: Optional[SolvationEnergyDataset] = None,
                                  hessian_data: Optional[HessianDataset] = None) -> pd.DataFrame:
     """Compute the ionization potential and other molecular properties in different solvents
 
@@ -685,7 +685,7 @@ def collect_molecular_properties(energy_data: Union[GeometryDataset, SinglePoint
                 wall_times[inchi][state] += wt
 
     # Get the entries in each solvent
-    solvent_energies = solvation_data.get_energies()
+    solvent_energies = {} if solvation_data is None else solvation_data.get_energies()
     logger.info(f'Found {len(vacuum_energies)} calculations with at least one solvent')
 
     # Load in the reference energies
