@@ -29,9 +29,27 @@ def _run_simulation(smiles: str) -> Tuple[List[OptimizationResult], List[AtomicR
     return [neutral_relax, oxidized_relax], []  # , [neutral_hessian, oxidized_hessian]
 
 
-def run_simulation(smiles: str) -> Tuple[List[OptimizationResult], List[AtomicResult]]:
-    """Hack to make each execution run in a separate process. XTB or geoMETRIC is bad with file handles"""
+def run_simulation(smiles: str, dilation_factor: float = 1) -> Tuple[List[OptimizationResult], List[AtomicResult]]:
+    """Hack to make each execution run in a separate process. XTB or geoMETRIC is bad with file handles
+
+    Args:
+        smiles: SMILES string of molecule to evaluate
+        dilation_factor: A factor by which to expand the runtime of the simulation
+            Used to enumlate longer simulations without spending CPU cycles
+    """
     from concurrent.futures import ProcessPoolExecutor
+    from time import perf_counter, sleep
+
+    assert dilation_factor >= 1
+
     with ProcessPoolExecutor(max_workers=1) as exec:
+        runtime = perf_counter()
         fut = exec.submit(_run_simulation, smiles)
-        return fut.result()
+        result = fut.result()
+        runtime = perf_counter() - runtime
+
+        # If the dilation factor is set,
+        #  sleep until runtime * dilation_factor has elapsed
+        if dilation_factor > 1:
+            sleep(runtime * (dilation_factor - 1))
+        return result

@@ -9,11 +9,12 @@ from parsl.providers import LocalProvider
 from parsl.monitoring import MonitoringHub
 
 
-def local_config(log_dir: str, prefetch: int = 0) -> Config:
+def local_config(log_dir: str, max_workers: int, prefetch: int = 0) -> Config:
     """Single node with a single task per worker
 
     Args:
         log_dir: Path to store monitoring DB and parsl logs
+        max_workers: Maximum number of concurrent tasks
         prefetch: Number of tasks for ML workers to prefetch for inference
     Returns:
         (Config) Parsl configuration
@@ -24,7 +25,7 @@ def local_config(log_dir: str, prefetch: int = 0) -> Config:
             HighThroughputExecutor(
                 address=address_by_hostname(),
                 label="worker",
-                max_workers=1,
+                max_workers=max_workers,
                 prefetch_capacity=prefetch,
                 provider=LocalProvider(
                     nodes_per_block=1,

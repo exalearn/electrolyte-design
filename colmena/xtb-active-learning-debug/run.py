@@ -3,6 +3,7 @@ from typing import List
 from functools import partial, update_wrapper
 from pathlib import Path
 from datetime import datetime
+from queue import Queue
 import argparse
 import logging
 import hashlib
@@ -14,7 +15,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from rdkit import Chem
-from colmena.method_server import ParslMethodServer
+from colmena.task_server import ParslTaskServer
 from colmena.models import Result
 from colmena.redis.queue import ClientQueues, make_queue_pairs
 from colmena.thinker import BaseThinker, agent, result_processor, event_responder, task_submitter
@@ -35,6 +36,7 @@ class Thinker(BaseThinker):
     """ML-enhanced optimization loop for molecular design"""
 
     def __init__(self, queues: ClientQueues,
+                 num_workers: int,
                  database: List[MoleculeData],
                  search_space: Path,
                  n_to_evaluate: int,
@@ -57,7 +59,7 @@ class Thinker(BaseThinker):
             beta: Amount to weight uncertainty in the activiation function
             random_seed: Random seed for the model (re)trainings
         """
-        super().__init__(queues, ResourceCounter(1, ['training', 'inference', 'simulation']), daemon=True)
+        super().__init__(queues, ResourceCounter(num_workers, ['training', 'inference', 'simulation']), daemon=True)
 
         # Configuration for the run
         self.inference_chunk_size = inference_chunk_size
@@ -91,13 +93,16 @@ class Thinker(BaseThinker):
         self.inference_slots = Semaphore()  # Number of slots available for inference tasks
         self.start_training = Event()   # Mark that retraining should start
         self.all_training_started = Event()  # Mark that training has begun
-        self.task_queue = []  # Holds a list of tasks for inference
+        self.task_queue = Queue()  # Holds a list of tasks for inference
         self.task_queue_lock = Lock()  # Ensures only one thread edits task queue at a time
+        self.max_ml_workers = 1
         self.inference_batch = 0
 
-        # Allocate all resource to inference for the first task
-        self.rec.reallocate(None, 'inference', 1)
-        self.rec.acquire('inference', 1)
+        # Allocate maximum number of ML workers to inference, remainder to simulation
+        self.rec.reallocate(None, 'inference', self.max_ml_workers)
+        self.rec.acquire('inference', self.max_ml_workers)
+        if num_workers > self.max_ml_workers:
+            self.rec.reallocate(None, 'simulation', num_workers - self.max_ml_workers)
         
         # Mark the number of inference slots we have available
         for _ in range(self.rec.allocated_slots('inference') * 2):
@@ -134,7 +139,7 @@ class Thinker(BaseThinker):
             # Gather nodes for training until either training finishes or we have 1 node per model.
             n_allocated = 0
             self.all_training_started.clear()
-            while (not self.all_training_started.is_set()) and n_allocated < len(self.mpnns):
+            while (not self.all_training_started.is_set()) and n_allocated <= self.max_ml_workers:
                 if self.rec.reallocate('simulation', 'training', self.nodes_per_qc,
                                        cancel_if=self.all_training_started):
                     n_allocated += self.nodes_per_qc
@@ -153,7 +158,8 @@ class Thinker(BaseThinker):
             # Trigger inference
             self.logger.info('Beginning inference process. Will gradually scavenge nodes from simulation tasks')
             self.start_inference.set()
-            while not (self.inference_finished.is_set() or self.rec.allocated_slots("simulation") == 0):
+            while not (self.inference_finished.is_set() or
+                       self.rec.allocated_slots("inference") == self.max_ml_workers):
                 # Request a block of nodes for inference
                 acq_success = self.rec.reallocate('simulation', 'inference', self.nodes_per_qc,
                                                   cancel_if=self.inference_finished)
@@ -174,7 +180,7 @@ class Thinker(BaseThinker):
 
         # Submit the next task
         with self.task_queue_lock:
-            inchi, info = self.task_queue.pop(0)
+            inchi, info = self.task_queue.get()
             mol = Chem.MolFromInchi(inchi)
             smiles = Chem.MolToSmiles(mol)
             self.logger.info(f'Submitted {smiles} to simulate with NWChem')
@@ -275,19 +281,16 @@ class Thinker(BaseThinker):
         weights, history = result.value
         self.mpnns[model_id].set_weights(weights)
         
-        # Save the model   # COMMENTED OUT DUE TO PERFORMANCE Problems?
-        #model_folder = self.output_dir.joinpath('models')
-        #model_folder.mkdir(exist_ok=True)
-        #self.mpnns[model_id].save(model_folder.joinpath(f'model-{model_id}_t{self.inference_batch}.h5'))
-
         # Print out some status info
         self.logger.info(f'Model {model_id} finished training.')
         with open(self.output_dir.joinpath('training-history.json'), 'a') as fp:
             print(repr(history), file=fp)
 
+    @event_responder(event_name='start_inference')
     def launch_inference(self):
         """Submit inference tasks for the yet-unlabelled samples"""
-        
+
+        self.logger.info('Beginning to submit inference tasks')
         # Make a folder for the models
         model_folder = self.output_dir.joinpath('models')
         model_folder.mkdir(exist_ok=True)
@@ -312,11 +315,6 @@ class Thinker(BaseThinker):
         """Re-prioritize the machine learning tasks"""
         self.start_inference.clear()
         
-        # Begin the job submission thread
-        submit_thread = Thread(target=self.launch_inference)
-        submit_thread.start()
-        self.logger.info('Beginning to submit inference tasks')
-
         #  Make arrays that will hold the output results from each run
         y_pred = [np.zeros((len(x), len(self.mpnns)), dtype=np.float32) for x in self.inference_chunks]
 
@@ -338,9 +336,6 @@ class Thinker(BaseThinker):
             chunk_id = result.task_info.get('chunk_id')
             model_id = result.task_info.get('model_id')
             y_pred[chunk_id][:, model_id] = np.squeeze(result.value)
-
-        # Close out the inference thread
-        submit_thread.join()
         self.logger.info('All inference tasks are complete')
 
         # Compute the mean and std for each prediction
@@ -375,16 +370,23 @@ class Thinker(BaseThinker):
 
         # Get a list of the molecules
         with self.task_queue_lock:
-            self.task_queue = []
-            while len(self.task_queue) < self.n_to_evaluate:
+            # Make a temporary copy as a List, which means we can easily judge its size
+            task_queue = []
+            while len(task_queue) < self.n_to_evaluate * 2:
                 # Pick a molecule
                 mol, mean, std, ucb = best_list.pop()
 
                 # Add it to list if not in database or not already in queue
-                if mol not in self.already_searched and mol not in self.task_queue:
+                if mol not in self.already_searched and mol not in task_queue:
                     # Note: converting to float b/c np.float32 is not JSON serializable
-                    self.task_queue.append((mol, {'mean': float(mean), 'std': float(std), 'ucb': float(ucb),
-                                                  'batch': self.inference_batch}))
+                    task_queue.append((mol, {'mean': float(mean), 'std': float(std), 'ucb': float(ucb),
+                                             'batch': self.inference_batch}))
+
+            # Store it as a Queue
+            self.task_queue = Queue()
+            for i in task_queue:
+                self.task_queue.put(i)
+
         self.logger.info('Updated task list')
 
    
@@ -414,6 +416,9 @@ if __name__ == '__main__':
     parser.add_argument('--num-epochs', default=512, type=int, help='Maximum number of epochs for the model training')
     parser.add_argument('--batch-size', default=64, type=int, help='Batch size for model training')
     parser.add_argument('--random-seed', default=0, type=int, help='Random seed for model (re)trainings')
+    parser.add_argument('--dilation-factor', default=1, type=float,
+                        help='Factor by which to artificially increase simulation time')
+    parser.add_argument('--num-workers', default=1, type=int, help='Number of workers')
 
     # Parse the arguments
     args = parser.parse_args()
@@ -492,16 +497,20 @@ if __name__ == '__main__':
                               learning_rate=args.learning_rate, bootstrap=True, batch_size=args.batch_size)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
+    my_run_simulation = partial(run_simulation, dilation_factor=args.dilation_factor)
+    my_run_simulation = update_wrapper(my_run_simulation, run_simulation)
+
     # Create the method server and task generator
     inf_cfg = {'executors': ['worker']}
     tra_cfg = {'executors': ['worker']}
     dft_cfg = {'executors': ['worker']}
-    doer = ParslMethodServer([(my_evaluate_mpnn, inf_cfg), (run_simulation, dft_cfg),
-                              (my_update_mpnn, tra_cfg), (my_retrain_mpnn, tra_cfg)],
-                             server_queues, config)
+    doer = ParslTaskServer([(my_evaluate_mpnn, inf_cfg), (my_run_simulation, dft_cfg),
+                            (my_update_mpnn, tra_cfg), (my_retrain_mpnn, tra_cfg)],
+                           server_queues, config)
 
     # Configure the "thinker" application
     thinker = Thinker(client_queues,
+                      args.num_workers,
                       database,
                       args.search_space,
                       args.search_size,
