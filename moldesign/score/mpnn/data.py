@@ -1,6 +1,6 @@
 """Utilities for creating a data-loader"""
 from functools import partial
-from typing import List, Tuple, Sequence
+from typing import List, Tuple, Sequence, Optional
 
 import tensorflow as tf
 import networkx as nx
@@ -146,7 +146,7 @@ def make_training_tuple(batch, target_name='pIC50'):
 def make_data_loader(file_path, batch_size=32, shuffle_buffer=None,
                      n_threads=tf.data.experimental.AUTOTUNE, shard=None,
                      cache: bool = False, output_property: str = 'pIC50',
-                     output_shape: Sequence[int] = ()) -> tf.data.TFRecordDataset:
+                     output_shape: Sequence[int] = (), random_seed: Optional[int] = None) -> tf.data.TFRecordDataset:
     """Make a data loader for tensorflow
 
     Args:
@@ -170,7 +170,7 @@ def make_data_loader(file_path, batch_size=32, shuffle_buffer=None,
 
     # Shuffle the entries
     if shuffle_buffer is not None:
-        r = r.shuffle(shuffle_buffer)
+        r = r.shuffle(shuffle_buffer, seed=random_seed)
 
     # Shard after shuffling (so that each rank will be able to make unique batches each time)
     if shard is not None:
