@@ -4,7 +4,7 @@
 mpnn_dir=../../ai-components/sc-2021/mpnn
 # Define the version of models to use
 search_space=../../ai-components/search-spaces/QM9-search.tsv
-models=`find $mpnn_dir/xtb-ip -name best_model.h5 | sort | head -n 2`
+models=`find $mpnn_dir/xtb-ip -name best_model.h5 | sort | tail -n 16`
 
 export PYTHONPATH=$PYTHONPATH:`pwd`
 

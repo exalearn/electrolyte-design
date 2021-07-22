@@ -244,13 +244,13 @@ class Thinker(BaseThinker):
             # Make the MPNN message
             if self.retrain_from_initial:
                 self.queues.send_inputs(model.get_config(), train_data, method='retrain_mpnn', topic='train',
-                                        task_info={'model_id': mid, 'molecules': list(train_data.keys())}, 
+                                        task_info={'model_id': mid}, # , 'molecules': list(train_data.keys())}, 
                                         keep_inputs=False,
                                         input_kwargs={'random_state': mid + self.random_seed})
             else:
                 model_msg = MPNNMessage(model)
                 self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
-                                        task_info={'model_id': mid, 'molecules': list(train_data.keys())}, 
+                                        task_info={'model_id': mid}, #'molecules': list(train_data.keys())}, 
                                         keep_inputs=False,
                                         input_kwargs={'random_state': mid + self.random_seed})
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
