@@ -1,7 +1,7 @@
 """Functions to generate configurations"""
 import os
 
-from parsl import HighThroughputExecutor
+from parsl.executors import HighThroughputExecutor, ThreadPoolExecutor
 from parsl.addresses import address_by_hostname
 from parsl.config import Config
 from parsl.launchers import AprunLauncher, SimpleLauncher
@@ -29,21 +29,9 @@ def theta_nwchem_config(log_dir: str,
 
     return Config(
         executors=[
-            HighThroughputExecutor(
-                address=address_by_hostname(),
-                label="qc",
-                max_workers=nwc_workers,
-                cores_per_worker=1e-6,
-                provider=LocalProvider(
-                    nodes_per_block=1,
-                    init_blocks=0,
-                    max_blocks=1,
-                    launcher=SimpleLauncher(),  # Places worker on the launch node
-                    worker_init='''
-module load miniconda-3
-conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
-''',
-                ),
+            ThreadPoolExecutor(
+                label='qc',
+                max_threads=nwc_workers
             ),
             HighThroughputExecutor(
                 address=address_by_hostname(),
@@ -69,7 +57,7 @@ conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
                 provider=LocalProvider(
                     nodes_per_block=nodes_per_nwchem,
                     init_blocks=0,
-                    max_blocks=1,  # Limits the number of manager processes,
+                    max_blocks=nwc_workers,  # Limits the number of manager processes,
                     launcher=AprunLauncher(overrides='-d 256 --cc depth -j 4'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3

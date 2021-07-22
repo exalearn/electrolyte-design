@@ -25,23 +25,14 @@ export MPICH_GNI_LMT_PATH=disabled
 export COMEX_MAX_NB_OUTSTANDING=6
 export LD_LIBRARY_PATH=/opt/intel/compilers_and_libraries_2020.0.166/linux/compiler/lib/intel64_lin:$LD_LIBRARY_PATH
 
-# Copy over the database files
-db_path=/tmp/edw-db-$RANDOM
-cp -r /lus/theta-fs0/projects/CSC249ADCD08/edw/ai-components/sc-2021/db $db_path
-chmod -R u+rwX $db_path
-mongoport=271${RANDOM::2}
-mongod --dbpath $db_path --port $mongoport &> mongo.out &
-mongo=$!
-
 # Start the redis-server
 port=631${RANDOM::2}
 redis-server --port $port &> redis.out &
 redis=$!
 
 # Run!
-./nwc-run.sh --redisport $port --mongoport $mongoport $@
+search_space=/lus/theta-fs0/projects/CSC249ADCD08/edw/ai-components/search-spaces/QM9-search.tsv
+python run.py --redisport $port --search-space $search_space $@
 
 # Kill the servers
 kill $redis
-kill $mongo
-rm -r $db_path

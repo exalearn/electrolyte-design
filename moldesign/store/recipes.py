@@ -7,6 +7,8 @@ redox_recipes = [
     IonizationEnergyRecipe(name='xtb-vacuum', geometry_level='xtb', energy_level='xtb', adiabatic=True),
     IonizationEnergyRecipe(name='smb-vacuum-vertical', geometry_level='small_basis',
                            energy_level='small_basis', adiabatic=False),
+    IonizationEnergyRecipe(name='smb-vacuum-no-zpe', geometry_level='small_basis',
+                           energy_level='small_basis', adiabatic=True),
     IonizationEnergyRecipe(name='smb-vacuum', geometry_level='small_basis',
                            energy_level='small_basis', zpe_level='small_basis', adiabatic=True),
 ]

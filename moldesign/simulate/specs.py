@@ -55,6 +55,19 @@ _opt_specs = {
             'keywords': _nwc_xfine_kwds
         }
     },
+    'diffuse_basis': {
+        'name': 'diffuse_basis',
+        'description': 'geomeTRIC + NWCHem/B3LYP/6-311++gss',
+        'optimization_spec': {
+            'program': 'geometric',
+        }, 'qc_spec': {
+            'driver': 'gradient',
+            'method': 'b3lyp',
+            'basis': '6-311++G**',
+            'program': 'nwchem',
+            'keywords': _nwc_xfine_robust_kwds
+        }
+    },
     'xtb': {
         'name': 'xtb',
         'description': 'GeomeTRIC + XTB',
@@ -108,6 +121,17 @@ _reference_energies = {
                      'P': -341.255344529106,
                      'S': -398.103353899211,
                      'Cl': -460.134289124795},
+    'diffuse_basis': {'H': -0.502256981381,
+                      'He': -2.913027858378,
+                      'Li': -7.491333092405,
+                      'C': -37.857266645766,
+                      'N': -54.600723364844,
+                      'O': -75.089879446124,
+                      'F': -99.760580091674,
+                      'Si': -289.394168463041,
+                      'P': -341.281731880244,
+                      'S': -398.133069981595,
+                      'Cl': -460.166882319441},
     'g4mp2': {'C': -37.794203,
               'H': -0.502094,
               'O': -75.002483,
