@@ -38,7 +38,7 @@ class QCFractalWrapper:
     and passing data between different steps of the process."""
 
     def __init__(self, coll_name: str, qc_spec: str, base_class: Type[Collection] = Dataset,
-                 address: str = "localhost:7874", qca_passwd: Optional[str] = os.environ.get("QCAUSR", None),
+                 address: str = "localhost:7874", qca_passwd: Optional[str] = None,
                  create: bool = False):
         """Open the geometry computation dataset
 
@@ -50,7 +50,8 @@ class QCFractalWrapper:
             qca_passwd: Password for the QCFractal server
             create: Whether creating a new collection is acceptable
         """
-
+        if qca_passwd is None:
+            qca_passwd = os.environ.get("QCAUSR", None)
         self.qc_spec = qc_spec
         self.client = FractalClient(address, username='user', password=qca_passwd, verify=False)
         try:
