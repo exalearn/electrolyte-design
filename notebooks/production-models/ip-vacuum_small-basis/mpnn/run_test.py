@@ -5,6 +5,7 @@ import json
 import os
 from typing import List
 
+import tensorflow as tf
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.models import Model
@@ -50,13 +51,17 @@ if __name__ == "__main__":
     arg_parser.add_argument('--output-layers', help='Number of hidden units of the output layers', type=int,
                             default=(512, 256, 128), nargs='*')
     arg_parser.add_argument('--batch-size', help='Number of molecules per batch', type=int, default=32)
-    arg_parser.add_argument('--num-epochs', help='Number of epochs to run', type=int, default=64)
+    arg_parser.add_argument('--num-epochs', help='Number of epochs to run', type=int, default=512)
     arg_parser.add_argument('--readout-fn', default='softmax', help='Readout function')
+    arg_parser.add_argument('--random-seed', default=1, help='Random seed for the model initialization', type=int)
 
     # Parse the arguments
     args = arg_parser.parse_args()
     run_params = args.__dict__
     params_hash = hashlib.sha256(json.dumps(run_params).encode()).hexdigest()[:6]
+
+    # Set the random seed for TF
+    tf.random.set_seed(args.random_seed)
 
     # Determine the output directory
     test_dir = os.path.join('networks', f'T{args.num_messages}_b{args.batch_size}_n{args.num_epochs}_{params_hash}')
@@ -66,7 +71,8 @@ if __name__ == "__main__":
 
     # Making the data loaders
     train_loader = make_data_loader('../datasets/train_data.proto', shuffle_buffer=32768,
-                                    batch_size=args.batch_size, output_property='output')
+                                    batch_size=args.batch_size, output_property='output',
+                                    random_seed=args.random_seed)
     test_loader = make_data_loader('../datasets/test_data.proto', batch_size=args.batch_size, output_property='output')
     val_loader = make_data_loader('../datasets/valid_data.proto', batch_size=args.batch_size, output_property='output')
 

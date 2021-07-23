@@ -7,7 +7,9 @@ We update the models as IP computations are completed and use the updated models
 
 ## Running
 
-This code is designed to be run on a single workstation.
+This code is designed to be run on a single workstation: `python run.py`.
+
+Call `python run.py --help` to see the full available options.
 
 ## Implementation
 
@@ -15,6 +17,10 @@ Our application broken into 6 "agent" threads that manage training machine learn
 using predictions of models to select the next simulation, 
 running simulations,
 and allocating resources between the 3 types of computations.
+
+At present, we will allocate up to 1 worker for the machine learning tasks.
+We plan to implement a configurable number of ML workers once 
+we have the ability to pin workers to a specific GPU.
 
 ### Model Training
 
