@@ -293,7 +293,7 @@ class GraphLoader(tf.keras.utils.Sequence, tf.keras.callbacks.Callback):
         # Get the molecules and outputs out
         mols, y = zip(*chunk)
         x = _merge_batch(mols)
-        return x, np.array(y)
+        return x, np.array(y)[:, None]
 
     def __len__(self):
         # Get the number of batches
