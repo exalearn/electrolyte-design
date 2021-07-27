@@ -8,7 +8,7 @@ import tensorflow as tf
 from tensorflow.keras import callbacks as cb
 
 from moldesign.utils.globals import get_process_pool
-from moldesign.score.mpnn.callbacks import LRLogger, EpochTimeLogger
+from moldesign.score.mpnn.callbacks import LRLogger, EpochTimeLogger, TimeLimitCallback
 from moldesign.score.mpnn.data import _merge_batch, GraphLoader
 from moldesign.score.mpnn.layers import custom_objects
 from moldesign.utils.conversions import convert_smiles_to_dict
@@ -105,7 +105,7 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
     # Feed the batches through the MPNN
     all_outputs = []
     for model in models:
-        outputs = [model.predict_on_batch(b) for b in batches]
+        outputs = [model(b) for b in batches]
         all_outputs.append(np.vstack(outputs))
     return np.hstack(all_outputs)
 
@@ -113,7 +113,8 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: int,
                 atom_types: List[int], bond_types: List[str], batch_size: int = 32,
                 validation_split: float = 0.1, bootstrap: bool = False,
-                random_state: int = 1, learning_rate: float = 1e-3, patience: int = None)\
+                random_state: int = 1, learning_rate: float = 1e-3, patience: int = None,
+                timeout: float = None)\
         -> Tuple[List, dict]:
     """Update a model with new training sets
 
@@ -130,6 +131,7 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
             and validation set as the database becomes larger
         learning_rate: Learning rate for the Adam optimizer
         patience: Number of epochs without improvement before terminating training.
+        timeout: Maximum training time in seconds
     Returns:
         model: Updated weights
         history: Training history
@@ -138,14 +140,14 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
     # Rebuild the model from message
     model = model_msg.get_model()
     return _train_model(model, database, num_epochs, atom_types, bond_types, batch_size, validation_split,
-                        bootstrap, random_state, learning_rate, patience)
+                        bootstrap, random_state, learning_rate, patience, timeout)
 
 
 def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int,
                  atom_types: List[int], bond_types: List[str], batch_size: int = 32,
                  validation_split: float = 0.1, bootstrap: bool = False,
                  random_state: int = 1, learning_rate: float = 1e-3,
-                 patience: int = None) -> Tuple[List, dict]:
+                 patience: int = None, timeout: float = None) -> Tuple[List, dict]:
     """Train a model from initialized weights
 
     Args:
@@ -161,6 +163,7 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
             and validation set as the database becomes larger
         learning_rate: Learning rate for the Adam optimizer
         patience: Number of epochs without improvement before terminating training.
+        timeout: Maximum training time in seconds
     Returns:
         model: Updated weights
         history: Training history
@@ -178,14 +181,14 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
         pass
 
     return _train_model(model, database, num_epochs, atom_types, bond_types, batch_size, validation_split,
-                        bootstrap, random_state, learning_rate, patience)
+                        bootstrap, random_state, learning_rate, patience, timeout)
 
 
 def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: int,
                  atom_types: List[int], bond_types: List[str], batch_size: int = 32,
                  validation_split: float = 0.1, bootstrap: bool = False,
                  random_state: int = 1, learning_rate: float = 1e-3,
-                 patience: int = None) -> Tuple[List, dict]:
+                 patience: int = None, timeout: float = None) -> Tuple[List, dict]:
     """Train a model
 
     Args:
@@ -201,6 +204,7 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
             and validation set as the database becomes larger
         learning_rate: Learning rate for the Adam optimizer
         patience: Number of epochs without improvement before terminating training.
+        timeout: Maximum training time in seconds
     Returns:
         model: Updated weights
         history: Training history
@@ -243,18 +247,28 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
     if patience is None:
         patience = num_epochs // 8
 
+    early_stopping = cb.EarlyStopping(patience=patience, restore_best_weights=True)
     my_callbacks = [
         LRLogger(),
         EpochTimeLogger(),
         cb.LearningRateScheduler(lr_schedule),
-        cb.EarlyStopping(patience=patience, restore_best_weights=True),
+        early_stopping,
         cb.TerminateOnNaN(),
         train_loader  # So the shuffling gets called
     ]
+    if timeout is not None:
+        my_callbacks += [
+            TimeLimitCallback(timeout)
+        ]
 
     # Run the desired number of epochs
     history = model.fit(train_loader, epochs=num_epochs, validation_data=val_loader,
                         verbose=False, shuffle=False, callbacks=my_callbacks)
+
+    # If a timeout is used, make sure we are using the best weights
+    #  The training may have exited without storing the best weights
+    if timeout is not None:
+        model.set_weights(early_stopping.best_weights)
 
     # Check if there is a NaN loss
     if np.isnan(history.history['loss']).any():

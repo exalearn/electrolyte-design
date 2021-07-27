@@ -28,3 +28,31 @@ class EpochTimeLogger(Callback):
     def on_epoch_end(self, epoch, logs=None):
         if logs is not None:
             logs['epoch_time'] = perf_counter() - self.time
+
+
+class TimeLimitCallback(Callback):
+    """Limit the amount of time for training
+
+    WARNING: This callback will not restore the best weights.
+    You must track them with an EarlyStopping callback and set
+    the best weights manually after a timeout.
+    """
+
+    def __init__(self, timeout: float):
+        """
+        Args:
+            timeout: Maximum training time in seconds
+        """
+        super().__init__()
+        self.timeout = timeout
+        self.start_time = perf_counter()
+        self.timed_out = False
+
+    def on_train_begin(self, logs=None):
+        self.start_time = perf_counter()
+        self.timed_out = False
+
+    def on_train_batch_end(self, batch, logs=None):
+        if perf_counter() - self.start_time > self.timeout:
+            self.model.stop_training = True
+            self.timed_out = True
