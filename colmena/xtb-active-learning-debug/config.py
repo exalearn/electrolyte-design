@@ -24,16 +24,29 @@ def local_config(log_dir: str, max_workers: int, prefetch: int = 0) -> Config:
         executors=[
             HighThroughputExecutor(
                 address=address_by_hostname(),
-                label="worker",
+                label="qc-worker",
                 max_workers=max_workers,
                 prefetch_capacity=prefetch,
+                cpu_affinity='block',
                 provider=LocalProvider(
                     nodes_per_block=1,
                     init_blocks=1,
                     max_blocks=1,
                     launcher=SimpleLauncher(),  # Places worker on the launch node
                 ),
-            )
+            ),
+            HighThroughputExecutor(
+                address=address_by_hostname(),
+                label="ml-worker",
+                max_workers=1,
+                prefetch_capacity=prefetch,
+                provider=LocalProvider(
+                    nodes_per_block=1,
+                    init_blocks=1,
+                    max_blocks=1,
+                    launcher=SimpleLauncher(),  # Places worker on the launch node
+               )
+           )
         ],
         run_dir=log_dir,
         strategy='simple',
