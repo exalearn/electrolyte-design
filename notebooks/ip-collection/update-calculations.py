@@ -21,16 +21,19 @@ dif_xtb_vert = SinglePointDataset('Electrolyte XTB Neutral Geometry, Diffuse-Bas
 smb_smb_vert = SinglePointDataset('Electrolyte SMB Neutral Geometry, Small-Basis Energy', 'nwchem', 'small_basis')
 nbn_smb_vert = SinglePointDataset('Electrolyte SMB Neutral Geometry, Normal-Basis Energy', 'nwchem', 'normal_basis')
 
+nbn_smb_adia = SinglePointDataset('Electrolyte SMB Adiabatic Geometry, Normal-Basis Energy', 'nwchem', 'normal_basis')
+dif_smb_adia = SinglePointDataset('Electrolyte SMB Adiabatic Geometry, Diffuse-Basis Energy', 'nwchem', 'diffuse_basis')
+
 sbn_hess = HessianDataset('Electrolyte Hessian', 'nwchem', 'small_basis')
 nbn_hess = HessianDataset('Electrolyte Hessian, 6-31G(2df,p)', 'nwchem', 'normal_basis')
 
 xtb_solv = SolvationEnergyDataset('EDW XTB Solvation Energy', 'xtb', 'xtb', _xtb_solvs)
 smb_solv = SolvationEnergyDataset('EDW NWChem Solvation Energy', 'nwchem', 'small_basis', _nwc_solvs)
-nbn_solv = SolvationEnergyDataset('Electrolyte Normal-Basis Solvation Energy', 'nwchem', 'normal_basis', _nwc_solvs)
+nbn_solv = SolvationEnergyDataset('EDW Normal-Basis Solvation Energy', 'nwchem', 'normal_basis', _nwc_solvs)
 
 smb_xtb_vert_solv = SolvationEnergyDataset('Electrolyte XTB Neutral Geometry, Small-Basis Solvation Energy', 'nwchem', 'small_basis', _nwc_solvs)
 nbn_xtb_vert_solv = SolvationEnergyDataset('Electrolyte XTB Neutral Geometry, Normal-Basis Solvation Energy', 'nwchem', 'normal_basis', _nwc_solvs)
-dif_xtb_vert_solv = SolvationEnergyDataset('Electrolyte XTB Neutral Geometry, Diffuse-Basis Solvation Energy', 'nwchem', 'diffuse_basis', _nwc_solvs, create=True)
+dif_xtb_vert_solv = SolvationEnergyDataset('Electrolyte XTB Neutral Geometry, Diffuse-Basis Solvation Energy', 'nwchem', 'diffuse_basis', _nwc_solvs)
 
 # Start charged geometries if a neutral is completed
 for geom in [xtb_geom, smb_geom, nbn_geom]:
@@ -76,6 +79,25 @@ def submit_vertical_geometries(geom_dataset: GeometryDataset, vert_datasets: Lis
 submit_vertical_geometries(xtb_geom, [smb_xtb_vert, nbn_xtb_vert, dif_xtb_vert])
 submit_vertical_geometries(smb_geom, [smb_smb_vert, nbn_smb_vert])
 
+
+# Start computations with adiabatic geometries from lower level of theory
+def submit_adiabatic_geoemtries(geom_dataset: GeometryDataset, adia_datasets: List[SinglePointDataset]):
+    # Loop over all geometries in the source dataset
+    all_geoms = geom_dataset.get_geometries()
+    print(f'Found {len(all_geoms)} molecules in {geom_dataset.coll.name}')
+    
+    # Add the molecules
+    for inchi, geoms in all_geoms.items():
+        for geom in geoms.values():
+            for adia in adia_datasets:
+                adia.add_molecule(geom, inchi, save=False)
+                
+    for adia in adia_datasets:  # Start the computations
+        adia.coll.save()
+        adia_started = adia.start_computation()
+        print(f'Started {adia_started} computations for {adia.coll.name}')
+            
+submit_adiabatic_geoemtries(smb_geom, [nbn_smb_adia, dif_smb_adia])
 
 # Pass geometries from one level forward to the next
 for start_geom, end_geom in [(xtb_geom, smb_geom), (smb_geom, nbn_geom)]:
