@@ -586,11 +586,13 @@ class SolvationEnergyDataset(SinglePointDataset):
         methods = self.coll.list_records()
         method = methods.iloc[0]['method']
         basis = methods.iloc[0]['basis']
-        kwds = methods['keywords']
+        if basis == 'None':  # Special case: None is stored as string not a null
+            basis = None
+        kwds = methods['keywords'].tolist()
 
         # Get the records
         all_records = []
-        for kwd in kwds: 
+        for kwd in kwds:
             records = self.coll.get_records(method=method, basis=basis, keywords=kwd, status=status).iloc[:, 0]
             records = records[~records.isnull()]
             all_records.append(records)
