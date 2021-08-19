@@ -385,7 +385,26 @@ class SinglePointDataset(QCFractalWrapper):
                     n_added += 1
         self.coll.save()
         return n_added
+    
+    def get_records(self, status: Optional[str] = None) -> pd.Series:
+        """Get all records stored in the dataset
+        
+        Args:
+            status: Any status to restrict to
+        """
+        
+        # Get the specification
+        methods = self.coll.list_records()
+        assert len(methods) == 1, 'We should have exactly one method per dataset'
+        method = methods.iloc[0]['method']
+        basis = methods.iloc[0]['basis']
+        kwds = methods.iloc[0]['keywords']
 
+        # Get the records
+        records = self.coll.get_records(method=method, basis=basis, keywords=kwds, status=status).iloc[:, 0]
+        records = records[~records.isnull()]
+        return records
+            
     def get_geometries(self, records: Optional[pd.Series] = None)\
             -> Dict[str, Dict[str, Molecule]]:
         """Get all completed geometries
@@ -421,19 +440,11 @@ class SinglePointDataset(QCFractalWrapper):
             All of the complete records
         """
 
-        # Get the specification
-        methods = self.coll.list_records()
-        assert len(methods) == 1, 'We should have exactly one method per dataset'
-        method = methods.iloc[0]['method']
-        basis = methods.iloc[0]['basis']
-        kwds = methods.iloc[0]['keywords']
-
-        # Get the records
-        records = self.coll.get_records(method=method, basis=basis, keywords=kwds).iloc[:, 0]
+        records = self.get_records()
         logger.info(f'Pulled {len(records)} records for {self.coll.name}')
 
         # Get only those which have completed
-        records = records[~records.isnull()]
+        records = records[records.map(lambda x: x.status.value == "COMPLETE")]
         logger.info(f'Found {len(records)} completed calculations')
         return records
 
@@ -568,6 +579,22 @@ class SolvationEnergyDataset(SinglePointDataset):
             n_submitted += len(results.submitted)
 
         return n_submitted
+    
+    def get_records(self, status: Optional[str] = None) -> pd.Series:
+        
+        # Get the specification
+        methods = self.coll.list_records()
+        method = methods.iloc[0]['method']
+        basis = methods.iloc[0]['basis']
+        kwds = methods['keywords']
+
+        # Get the records
+        all_records = []
+        for kwd in kwds: 
+            records = self.coll.get_records(method=method, basis=basis, keywords=kwd, status=status).iloc[:, 0]
+            records = records[~records.isnull()]
+            all_records.append(records)
+        return pd.concat(all_records)
 
     def get_energies(self) -> Dict[str, Dict[str, Dict[str, float]]]:
         """Get the energies in all solvents
@@ -718,6 +745,13 @@ def collect_molecular_properties(energy_data: Union[GeometryDataset, SinglePoint
                 'xyz_neutral': geoms[inchi]['neutral'].to_string('xyz'),
                 'wall_time_neutral': wall_times[inchi]['neutral'],
                 'u0_atom': u0_atom}
+        
+        # Compute the solvation energy
+        for label in ['reduced', 'oxidized', 'neutral']:
+            if all_solv_eng is None or label not in all_solv_eng or label not in vac_eng:
+                continue
+            for solvent, solv_eng in all_solv_eng[label].items():
+                data[f'solvent_{solvent}_{label}'] = solv_eng - vac_eng[label]
 
         # Compute the EA and IP in each solvent we have
         for label, name in zip(['reduced', 'oxidized'], ['EA', 'IP']):
