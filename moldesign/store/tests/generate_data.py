@@ -38,3 +38,8 @@ if __name__ == "__main__":
     record = run_single_point(xtb_neutral_xyz, "hessian", smb_spec, code=nwchem)
     with open('records/xtb-neutral_smb-neutral-hessian.json', 'w') as fp:
         print(record.json(), file=fp)
+
+    smb_spec, nwchem = get_qcinput_specification("small_basis", 'water')
+    record = run_single_point(xtb_neutral_xyz, "energy", smb_spec, code=nwchem)
+    with open('records/xtb-neutral_smb-neutral_water.json', 'w') as fp:
+        print(record.json(), file=fp)

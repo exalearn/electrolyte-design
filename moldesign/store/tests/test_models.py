@@ -74,3 +74,8 @@ def test_add_data():
     md.add_single_point(smb_hessian)
     assert isclose(md.data["xtb"][OxidationState.NEUTRAL].zpe[OxidationState.NEUTRAL]['small_basis'],
                    0.02155, abs_tol=1e-3)
+
+    # Add an NWChem with solvent
+    smb_solvent = AtomicResult.parse_file(_my_path.joinpath('records/xtb-neutral_smb-neutral_water.json'))
+    md.add_single_point(smb_solvent)
+    assert 'small_basis' in md.data['xtb']['neutral'].total_energy_in_solvent['neutral']['water']
