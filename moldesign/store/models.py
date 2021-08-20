@@ -523,8 +523,8 @@ class IonizationEnergyRecipe(BaseModel):
                 raise ValueError(f'Energy not available in {self.solvent} at {self.energy_level}'
                                  f' for {oxidation_state} molecule')
             delta_g += \
-                ionized_geometry.total_energy_in_solvent[oxidation_state][self.solvent][self.solvation_level] - \
-                ionized_geometry.total_energy_in_solvent[OxidationState.NEUTRAL][self.solvent][self.solvation_level]
+                ionized_geometry.solvation_energy[oxidation_state][self.solvent][self.solvation_level] - \
+                neutral_geometry.solvation_energy[OxidationState.NEUTRAL][self.solvent][self.solvation_level]
 
         # Compute the absolute potential using the Nerst equation
         n = get_charge(oxidation_state)
