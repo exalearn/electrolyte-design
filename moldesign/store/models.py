@@ -2,6 +2,7 @@
 from typing import Dict, List, Optional, Union, Tuple
 from enum import Enum
 
+from qcfractal.interface import FractalClient
 from qcfractal.interface.models import OptimizationRecord, ResultRecord
 from rdkit import Chem
 from pydantic import BaseModel, Field
@@ -13,6 +14,15 @@ from moldesign.simulate.thermo import compute_zpe_from_freqs, subtract_reference
 
 f = constants.ureg.Quantity('96485.3329 A*s/mol')
 e = constants.ureg.Quantity('1.602176634e-19 A*s')
+
+
+# Exceptions used by this class
+class UnmatchedGeometry(Exception):
+    """Error when a geometry is not found"""
+
+    def __init__(self):
+        super().__init__('Did not match the geometry')
+
 
 
 # Simple definitions for things that define molecular properties, used for type definition readability
@@ -148,17 +158,23 @@ class GeometryData(BaseModel):
         """Compute solvation energies given the available data"""
 
         # Loop over all oxidation states
-        for state, data in self.total_energy.items():
+        for state, vac_data in self.total_energy.items():
             if state not in self.total_energy_in_solvent:
                 continue
 
             # Loop over all solvents
-            for solvent, solv_data in self.total_energy_in_solvent[state]:
+            for solvent, solv_data in self.total_energy_in_solvent[state].items():
 
                 # Loop over all levels of accuracy
-                for level, vac_eng in data.items():
+                for level, vac_eng in vac_data.items():
                     if level not in solv_data:
                         continue
+
+                    # Add it to the solvation energy dictionary
+                    if state not in self.solvation_energy:
+                        self.solvation_energy[state] = {}
+                    if solvent not in self.solvation_energy[state]:
+                        self.solvation_energy[state][solvent] = {}
                     self.solvation_energy[state][solvent][level] = vac_eng - solv_data[level]
 
 
@@ -270,22 +286,25 @@ class MoleculeData(BaseModel):
             for state, geom in geoms.items():
                 if geom.xyz_hash == mol_hash:
                     return level, state
-        raise KeyError('Could not find a match for this geometry')
+        raise UnmatchedGeometry()
 
     def add_geometry(self, relax_record: Union[OptimizationResult, OptimizationRecord],
                      spec_name: Optional[AccuracyLevel] = None,
-                     overwrite: bool = False):
+                     overwrite: bool = False,
+                     client: Optional[FractalClient] = None):
         """Add geometry to this record given a QCFractal
 
         Args:
             relax_record: Output from a relaxation computation with QCEngine
             spec_name: Name of the accuracy level. If ``None``, we will infer it from teh result
             overwrite: Whether to overwrite an existing record
+            client: Connection to Fractal server, only needed for ``OptimizationRecord`` inputs
         """
 
         # Get the specification
         if spec_name is None:
-            spec_name = infer_specification_from_result(relax_record)
+            spec_name, solvent = infer_specification_from_result(relax_record, client)
+            assert solvent is None, "We do not yet support relaxation in solvents."
 
         # Get the geometry
         if isinstance(relax_record, OptimizationRecord):
@@ -322,7 +341,7 @@ class MoleculeData(BaseModel):
 
         try:
             init_level, init_state = self.match_geometry(geom.to_string("xyz"))
-        except KeyError:
+        except UnmatchedGeometry:
             return
 
         # Add the energy
@@ -333,14 +352,16 @@ class MoleculeData(BaseModel):
 
     def add_single_point(self, record: Union[AtomicResult, ResultRecord],
                          spec_name: Optional[AccuracyLevel] = None,
-                         solvent_name: Optional[str] = None):
+                         solvent_name: Optional[str] = None,
+                         client: Optional[FractalClient] = None):
         """Add a single-point computation to the record
 
         Args:
             record: Record containing the data to be added
             spec_name: Specification used to compute this structure. If none provided, it is inferred from the
                 specification in the result
-            solvent_name: Name of the solvent, if modeled
+            solvent_name: Name of the solvent, if known
+            client: Connection to QCFractal server. Needed for result records
         """
 
         # Get the geometry
@@ -355,7 +376,7 @@ class MoleculeData(BaseModel):
 
         # Infer the method, if needed
         if spec_name is None:
-            spec_name = infer_specification_from_result(record)
+            spec_name, solvent_name = infer_specification_from_result(record, client)
 
         # Get the oxidation state of the molecule used in this computation
         my_state = OxidationState.from_charge(round(geom.molecular_charge))
