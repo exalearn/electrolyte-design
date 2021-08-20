@@ -253,7 +253,7 @@ def infer_specification_from_result(result: Union[AtomicResult, ResultRecord,
     # Extract the method and keywords
     if isinstance(result, AtomicResult):
         model = result.model
-        kwds = AtomicResult.keywords
+        kwds = result.keywords
     elif isinstance(result, OptimizationResult):
         model = result.input_specification.model
         kwds = result.input_specification.keywords

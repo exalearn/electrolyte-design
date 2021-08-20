@@ -44,6 +44,15 @@ def test_add_data():
     xtb_energy = AtomicResult.parse_file(_my_path.joinpath('records/xtb-neutral_xtb-oxidized-energy.json'))
     md.add_single_point(xtb_energy)
 
+    # Add in solvation energies
+    xtb_energy = AtomicResult.parse_file(_my_path.joinpath('records/xtb-neutral_acn.json'))
+    md.add_single_point(xtb_energy)
+    assert "acetonitrile" in md.data['xtb']['neutral'].solvation_energy['neutral']
+
+    xtb_energy = AtomicResult.parse_file(_my_path.joinpath('records/xtb-oxidized_acn.json'))
+    md.add_single_point(xtb_energy)
+    assert "acetonitrile" in md.data['xtb']['oxidized'].solvation_energy['oxidized']
+
     # Show that we can compute a redox potential
     recipe = IonizationEnergyRecipe(name="xtb-vertical", geometry_level="xtb", energy_level="xtb", adiabatic=False)
     result = recipe.compute_ionization_potential(md, OxidationState.OXIDIZED)
@@ -53,6 +62,12 @@ def test_add_data():
     result = recipe.compute_ionization_potential(md, OxidationState.OXIDIZED)
     assert md.oxidation_potential['xtb'] == result
     assert md.oxidation_potential['xtb'] < md.oxidation_potential['xtb-vertical']
+
+    recipe = IonizationEnergyRecipe(name="xtb-acn", geometry_level="xtb", energy_level="xtb", adiabatic=True,
+                                    solvent='acetonitrile', solvation_level='xtb')
+    result = recipe.compute_ionization_potential(md, OxidationState.OXIDIZED)
+    assert md.oxidation_potential['xtb-acn'] == result
+    assert md.oxidation_potential['xtb-acn'] != md.oxidation_potential['xtb']
 
     # Add a single point small_basis computation
     smb_hessian = AtomicResult.parse_file(_my_path.joinpath('records/xtb-neutral_smb-neutral-hessian.json'))

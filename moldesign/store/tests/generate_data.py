@@ -24,6 +24,15 @@ if __name__ == "__main__":
     with open('records/xtb-oxidized.json', 'w') as fp:
         print(record.json(), file=fp)
 
+    # Compute the solvation energy for the neutral and the oxidized
+    xtb_spec, xtb = get_qcinput_specification('xtb', 'acetonitrile')
+    record = run_single_point(xtb_neutral_xyz, 'energy', xtb_spec, code=xtb, charge=0)
+    with open('records/xtb-neutral_acn.json', 'w') as fp:
+        print(record.json(), file=fp)
+    record = run_single_point(xtb_oxidized_xyz, 'energy', xtb_spec, code=xtb, charge=1)
+    with open('records/xtb-oxidized_acn.json', 'w') as fp:
+        print(record.json(), file=fp)
+
     # Run a single point Hessian with NWChem
     smb_spec, nwchem = get_qcinput_specification("small_basis")
     record = run_single_point(xtb_neutral_xyz, "hessian", smb_spec, code=nwchem)
