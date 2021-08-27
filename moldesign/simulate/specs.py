@@ -238,24 +238,35 @@ def lookup_reference_energies(spec_name: str) -> Dict[str, float]:
 
 
 def infer_specification_from_result(result: Union[AtomicResult, ResultRecord,
-                                                  OptimizationResult, OptimizationRecord]) -> str:
+                                                  OptimizationResult, OptimizationRecord],
+                                    client: Optional[FractalClient]) -> Tuple[str, Optional[str]]:
     """Infer the specification used to run a simulation given the result file
 
     Args:
         result: A QCEngine result
+        client: Needed to get the keywords from a OptimizationRecord or ResultRecord
     Returns:
-        The specification used to produce this result
+        - The specification used to produce this result
+        - Name of the solvent, if any
     """
 
-    # Extract the method and spec
+    # Extract the method and keywords
     if isinstance(result, AtomicResult):
         model = result.model
+        kwds = result.keywords
     elif isinstance(result, OptimizationResult):
         model = result.input_specification.model
+        kwds = result.input_specification.keywords
     elif isinstance(result, OptimizationRecord):
         model = Model(method=result.qc_spec.method, basis=result.qc_spec.basis)
+        assert client is not None, "You must provide the client along with OptimizationRecords"
+        kwds_id = result.qc_spec.keywords
+        kwds = client.query_keywords(kwds_id)[0].values
     elif isinstance(result, ResultRecord):
         model = result
+        assert client is not None, "You must provide the client along with ResultRecords"
+        kwds_id = model.keywords
+        kwds = client.query_keywords(kwds_id)[0].values
     else:
         raise ValueError(f'Unrecognized object type: {type(result)}')
 
@@ -265,5 +276,13 @@ def infer_specification_from_result(result: Union[AtomicResult, ResultRecord,
         if qc_spec["method"].lower() == model.method.lower() and \
                 model.dict(include={'basis'}, exclude_none=True).get("basis", "") \
                 == qc_spec.get("basis", "").lower():
-            return name
+
+            # Pull the solvent from the keywords
+            if qc_spec['program'] == 'xtb':
+                solvent = kwds.get('solvent')
+            elif qc_spec['program'] == 'nwchem':
+                solvent = kwds.get("cosmo__solvent")
+            else:
+                raise ValueError(f'We have not implemented how to get solvent from {spec["program"]}')
+            return name, solvent
     raise KeyError(f"Method not matched. method={model.method} basis={model.basis}")

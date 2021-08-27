@@ -21,11 +21,13 @@ from typing import Tuple
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
+from moldesign.simulate.init_geom import fix_cyclopropenyl
+
 logger = logging.getLogger(__name__)
 _code = 'nwchem'  # Default software used for QC
 
 
-def generate_inchi_and_xyz(smiles: str) -> Tuple[str, str]:
+def generate_inchi_and_xyz(smiles: str, special_cases: bool = True) -> Tuple[str, str]:
     """Generate the XYZ coordinates and InChI string for a molecule using
     a standard procedure.
 
@@ -35,8 +37,13 @@ def generate_inchi_and_xyz(smiles: str) -> Tuple[str, str]:
     2. Assign yet-undetermined stereochemistry based on the 3D geometry
     3. Generate an InCHi string for the molecules
 
+    We then have post-processing steps for common mistakes in generating geometries:
+
+    1. Ensuring cyclopropenyl groups are planar
+
     Args:
         smiles: SMILES string
+        special_cases: Whether to perform the post-processing
     Returns:
         - InChI string for the molecule
         - XYZ coordinates for the molecule
@@ -60,6 +67,10 @@ def generate_inchi_and_xyz(smiles: str) -> Tuple[str, str]:
         s = a.GetSymbol()
         c = conf.GetAtomPosition(i)
         xyz += f"{s} {c[0]} {c[1]} {c[2]}\n"
+
+    # Special cases for odd kinds of molecules
+    if special_cases:
+        fix_cyclopropenyl(xyz, smiles)
 
     return inchi, xyz
 
