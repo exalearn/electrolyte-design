@@ -1,4 +1,4 @@
-from threading import Event, Thread, Semaphore, Lock
+from threading import Event, Semaphore
 from typing import List
 from functools import partial, update_wrapper
 from pathlib import Path
@@ -11,6 +11,7 @@ import json
 import sys
 import os
 
+import rdkit
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -28,8 +29,11 @@ from moldesign.store.recipes import apply_recipes
 from moldesign.utils import get_platform_info
 from sim import run_simulation
 
-# Hard-coded property values
-output_property = 'oxidation_potential.xtb-vacuum'
+# Disable all GPUs for the planning process
+tf.config.set_visible_devices([], 'GPU')
+visible_devices = tf.config.get_visible_devices()
+for device in visible_devices:
+    assert device.device_type != 'GPU'
 
 
 class Thinker(BaseThinker):
@@ -38,7 +42,7 @@ class Thinker(BaseThinker):
     def __init__(self, queues: ClientQueues,
                  num_workers: int,
                  database: List[MoleculeData],
-                 search_space: Path,
+                 search_space: List[str],
                  n_to_evaluate: int,
                  n_complete_before_retrain: int,
                  retrain_from_initial: bool,
@@ -46,18 +50,20 @@ class Thinker(BaseThinker):
                  inference_chunk_size: int,
                  output_dir: str,
                  beta: float,
-                 random_seed: int = 0):
+                 random_seed: int,
+                 output_property: str):
         """
         Args:
             queues: Queues used to communicate with the method server
             database: Link to the MongoDB instance used to store results
-            search_space: Path to a search space of molecules to evaluate
+            search_space: List of InChI strings which define the search space
             n_complete_before_retrain: Number of simulations to complete before retraining
             retrain_from_initial: Whether to update the model or retrain it from initial weights
             mpnns: List of MPNNs to use for selecting samples
             output_dir: Where to write the output files
-            beta: Amount to weight uncertainty in the activiation function
+            beta: Amount to weight uncertainty in the activation function
             random_seed: Random seed for the model (re)trainings
+            output_property: Name of the property to be computed
         """
         super().__init__(queues, ResourceCounter(num_workers, ['training', 'inference', 'simulation']), daemon=True)
 
@@ -70,6 +76,7 @@ class Thinker(BaseThinker):
         self.beta = beta
         self.nodes_per_qc = 1
         self.random_seed = random_seed
+        self.output_property = output_property
 
         # Get the initial database
         self.database = database
@@ -83,7 +90,7 @@ class Thinker(BaseThinker):
         self.already_searched = set([d.identifier['inchi'] for d in self.database])
 
         # Prepare search space
-        self.mols = pd.read_csv(search_space, delim_whitespace=True)
+        self.mols = search_space.copy()
         self.inference_chunks = np.array_split(self.mols, max(len(self.mols) // self.inference_chunk_size, 1))
         self.logger.info(f'Split {len(self.mols)} molecules into {len(self.inference_chunks)} chunks for inference')
 
@@ -247,9 +254,9 @@ class Thinker(BaseThinker):
 
             # Make the database
             train_data = dict(
-                (d.identifier['smiles'], d.oxidation_potential['xtb-vacuum'])
+                (d.identifier['smiles'], d.oxidation_potential[self.output_property])
                 for d in self.database
-                if 'xtb-vacuum' in d.oxidation_potential
+                if self.output_property in d.oxidation_potential
             )
 
             # Make the MPNN message
@@ -338,6 +345,10 @@ class Thinker(BaseThinker):
             with open(self.output_dir.joinpath('inference-records.json'), 'a') as fp:
                 print(result.json(exclude={'value'}), file=fp)
 
+            # Determine the data
+            if not result.success:
+                raise ValueError('Result failed! Check the JSON')
+
             # Store the outputs
             chunk_id = result.task_info.get('chunk_id')
             model_id = result.task_info.get('model_id')
@@ -417,7 +428,7 @@ if __name__ == '__main__':
                         help="Number of new molecules to evaluate during this search")
     parser.add_argument('--retrain-frequency', default=50, type=int,
                         help="Number of completed computations that will trigger a retraining")
-    parser.add_argument("--molecules-per-ml-task", default=16384, type=int,
+    parser.add_argument("--molecules-per-ml-task", default=200000, type=int,
                         help="Number molecules per inference task")
     parser.add_argument("--ml-prefetch", default=1, help="Number of ML tasks to prefech on each node", type=int)
     parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. "
@@ -431,6 +442,8 @@ if __name__ == '__main__':
     parser.add_argument('--num-workers', default=1, type=int, help='Number of workers')
     parser.add_argument('--train-timeout', default=None, type=float, help='Timeout for training operation (s)')
     parser.add_argument('--train-patience', default=None, type=int, help='Patience for training operation (epochs)')
+    parser.add_argument('--solvent', default=None, choices=[None, 'acetonitrile'],
+                        help='Whether to compute solvation energy in a solvent')
 
     # Parse the arguments
     args = parser.parse_args()
@@ -446,6 +459,17 @@ if __name__ == '__main__':
     # Load in the initial dataset
     with open(args.init_dataset) as fp:
         database = [MoleculeData.parse_raw(line.strip()) for line in fp]
+
+    # Load in the search space
+    def _only_known_elements(inchi: str):
+        mol = rdkit.Chem.MolFromInchi(inchi)
+        if mol is None:
+            return False
+        return all(
+            e.GetAtomicNum() in atom_types for e in mol.GetAtoms()
+        )
+    full_search = pd.read_csv(args.search_space, delim_whitespace=True)
+    search_space = full_search[full_search['inchi'].apply(_only_known_elements)]
 
     # Create an output directory with the time and run parameters
     start_time = datetime.utcnow()
@@ -496,9 +520,8 @@ if __name__ == '__main__':
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
-    #  TODO (wardlt): Have users set the method name explicitly
     my_evaluate_mpnn = partial(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types,
-                               batch_size=256, cache=False)
+                               batch_size=32, cache=False)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
     
     my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, atom_types=atom_types, bond_types=bond_types,
@@ -512,8 +535,14 @@ if __name__ == '__main__':
 
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
-    my_run_simulation = partial(run_simulation, dilation_factor=args.dilation_factor)
+    my_run_simulation = partial(run_simulation, dilation_factor=args.dilation_factor, solvent=args.solvent)
     my_run_simulation = update_wrapper(my_run_simulation, run_simulation)
+
+    # Get the name of the output property
+    output_prop = {
+        None: 'xtb-vacuum',
+        'acetonitrile': 'xtb-acn'
+    }[args.solvent]
 
     # Create the method server and task generator
     inf_cfg = {'executors': ['ml-worker']}
@@ -527,7 +556,7 @@ if __name__ == '__main__':
     thinker = Thinker(client_queues,
                       args.num_workers,
                       database,
-                      args.search_space,
+                      search_space,
                       args.search_size,
                       args.retrain_frequency,
                       args.retrain_from_scratch,
@@ -535,8 +564,9 @@ if __name__ == '__main__':
                       args.molecules_per_ml_task,
                       out_dir,
                       args.beta,
-                      args.random_seed)
-    logging.info('Created the method server and task generator')
+                      args.random_seed,
+                      output_prop)
+    logging.info('Created the task server and task generator')
 
     try:
         # Launch the servers
