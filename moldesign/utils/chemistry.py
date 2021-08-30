@@ -3,6 +3,7 @@
 from rdkit import Chem
 
 
+# TODO (wardlt): Consider whether this is too simple to be a utility operation
 def get_baseline_charge(smiles: str) -> int:
     """Determine the charge on a molecule from its SMILES string
 

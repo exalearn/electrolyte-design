@@ -11,6 +11,7 @@ from qcelemental.physical_constants import constants
 
 from moldesign.simulate.specs import lookup_reference_energies, infer_specification_from_result
 from moldesign.simulate.thermo import compute_zpe_from_freqs, subtract_reference_energies, compute_frequencies
+from moldesign.utils.chemistry import get_baseline_charge
 
 f = constants.ureg.Quantity('96485.3329 A*s/mol')
 e = constants.ureg.Quantity('1.602176634e-19 A*s')
@@ -24,7 +25,6 @@ class UnmatchedGeometry(Exception):
         super().__init__('Did not match the geometry')
 
 
-
 # Simple definitions for things that define molecular properties, used for type definition readability
 class OxidationState(str, Enum):
     """Names for different oxidation states"""
@@ -33,20 +33,22 @@ class OxidationState(str, Enum):
     OXIDIZED = "oxidized"
 
     @classmethod
-    def from_charge(cls, charge: int) -> 'OxidationState':
+    def from_charge(cls, charge: int, smiles: str) -> 'OxidationState':
         """Get the oxidation from the charge
 
         Args:
             charge: Charge state
+            smiles: SMILES string of the molecule. Oxidation states are relative to the formal charge of the molecule
         Returns:
             Name of the charge state
         """
 
-        if charge == 0:
+        net_charge = charge - get_baseline_charge(smiles)
+        if net_charge == 0:
             return OxidationState.NEUTRAL
-        elif charge == 1:
+        elif net_charge == 1:
             return OxidationState.OXIDIZED
-        elif charge == -1:
+        elif net_charge == -1:
             return OxidationState.REDUCED
         else:
             raise ValueError(f'Unrecognized charge state: {charge}')
@@ -103,7 +105,7 @@ class GeometryData(BaseModel):
     zpe: Dict[OxidationState, Dict[AccuracyLevel, float]] = Field(
         default_factory=dict, help="Zero point energies in Ha " + _prop_desc
     )
-    solvation_energy: Dict[OxidationState, Dict[str, Dict[AccuracyLevel, float]]] = Field(
+    solvation_energy: Dict[OxidationState, Dict[SolventName, Dict[AccuracyLevel, float]]] = Field(
         default_factory=dict, help="Solvation energy in Ha for the molecule in different solvents " + _prop_desc
     )
     atomization_energy: Dict[AccuracyLevel, float] = Field(
@@ -315,7 +317,7 @@ class MoleculeData(BaseModel):
         xyz_hash = Molecule.from_data(xyz, dtype="xyz").get_hash()
 
         # Get the charge state for the geometry
-        oxidation_state = OxidationState.from_charge(round(geom.molecular_charge))
+        oxidation_state = OxidationState.from_charge(round(geom.molecular_charge), self.identifier['smiles'])
 
         # Check if the record already exists
         if not overwrite and spec_name in self.data and oxidation_state in self.data[spec_name]:
@@ -379,7 +381,7 @@ class MoleculeData(BaseModel):
             spec_name, solvent_name = infer_specification_from_result(record, client)
 
         # Get the oxidation state of the molecule used in this computation
-        my_state = OxidationState.from_charge(round(geom.molecular_charge))
+        my_state = OxidationState.from_charge(round(geom.molecular_charge), self.identifier['smiles'])
 
         # All calculations compute the energy. Store it as appropriate
         total_energy = record.properties.return_energy
