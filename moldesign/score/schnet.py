@@ -9,6 +9,7 @@ from schnetpack.atomistic import Atomwise
 from schnetpack import Properties
 from ase.io.xyz import read_xyz
 from torch.autograd import grad
+from torch import nn
 import numpy as np
 import torch
 
@@ -82,6 +83,40 @@ class Moleculewise(Atomwise):
         return result
 
 
+class AddToRepresentation(nn.Module):
+    """Add features from another source to atomic representations
+
+    These additional features could be both for individual atoms or for the
+    entire molecule. For the second case, this class will duplicate the property for each atom
+    before concatenating the value with the representation.
+
+    Properties are often taken from the input dictionary
+
+    Args:
+        additional_props ([string]): List of other properties to use as inputs
+    """
+
+    def __init__(self, additional_props: List[str]):
+        super(AddToRepresentation, self).__init__()
+        self.additional_props = additional_props.copy()
+
+    def forward(self, inputs):
+        # Get the representation
+        rep = inputs['representation']
+        n_atoms = rep.shape[1]  # Use for expanding properties
+
+        # Append the additional props
+        output = [rep]
+        for p in self.additional_props:
+            x = inputs[p]
+            if x.dim() == 1:  # Per-molecule properties
+                x = torch.unsqueeze(torch.unsqueeze(x, -1).expand(-1, n_atoms), -1)
+            elif x.dim() == 2:
+                x = torch.unsqueeze(x, -1)
+            output.append(x)
+        return torch.cat(output, -1)
+
+
 def evaluate_schnet(models: List[Union[TorchMessage, torch.nn.Module]],
                     molecules: List[str], property_name: str,
                     batch_size: int = 64, device: str = 'cpu',
@@ -97,7 +132,6 @@ def evaluate_schnet(models: List[Union[TorchMessage, torch.nn.Module]],
         device: Device on which to run the computation
         base_property: If using a delta-learning model, the value
             of the property at a lower fidelity
-
     """
 
     # Make sure the models are converted to Torch models
