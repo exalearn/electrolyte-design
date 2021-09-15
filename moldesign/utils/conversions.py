@@ -95,6 +95,8 @@ def convert_smiles_to_nx(smiles: str, add_hs: bool = False) -> nx.Graph:
     """
 
     mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f'Failed to parse smiles: {smiles}')
     if add_hs:
         mol = Chem.AddHs(mol)
 
