@@ -350,7 +350,7 @@ class MoleculeData(BaseModel):
         geo_data = self.data[init_level][init_state]
         if oxidation_state not in geo_data.total_energy:
             geo_data.total_energy[oxidation_state] = dict()
-        geo_data.total_energy[oxidation_state][spec_name] = relax_record.energies[-1]
+        geo_data.total_energy[oxidation_state][spec_name] = relax_record.energies[0]
 
     def add_single_point(self, record: Union[AtomicResult, ResultRecord],
                          spec_name: Optional[AccuracyLevel] = None,

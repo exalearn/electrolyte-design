@@ -39,6 +39,8 @@ def test_add_data():
     assert "oxidized" in md.data["xtb"]
     assert ("xtb", "oxidized") == md.match_geometry(xtb_geom.final_molecule.to_string("xyz"))
     assert ("xtb", "neutral") == md.match_geometry(xtb_geom.initial_molecule.to_string("xyz"))
+    assert md.data['xtb'][OxidationState.OXIDIZED].total_energy[OxidationState.OXIDIZED]['xtb'] != \
+           md.data['xtb'][OxidationState.NEUTRAL].total_energy[OxidationState.OXIDIZED]['xtb']
 
     # Load in a oxidized energy for the neutral structure
     xtb_energy = AtomicResult.parse_file(_my_path.joinpath('records/xtb-neutral_xtb-oxidized-energy.json'))
