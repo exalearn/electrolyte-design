@@ -24,10 +24,16 @@ def test_train(train_dataset, model, atom_types, bond_types):
     assert 'val_loss' in history
     assert len(new_weights) == len(model_msg.weights)
 
-    # Test with call back
+    # Test with a timeout
     start_time = perf_counter()
     update_mpnn(model_msg, train_dataset, 512, atom_types, bond_types, validation_split=0.5, timeout=1)
     assert perf_counter() - start_time < 2
+
+    # Test with a test set
+    _, _, y_pred = \
+        update_mpnn(model_msg, train_dataset, 512, atom_types, bond_types, ['C', 'CC'],
+                    validation_split=0.5, timeout=1)
+    assert np.array(y_pred).shape == (2,)
 
 
 def test_inference(model, atom_types, bond_types):

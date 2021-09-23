@@ -111,11 +111,11 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 
 
 def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: int,
-                atom_types: List[int], bond_types: List[str], batch_size: int = 32,
-                validation_split: float = 0.1, bootstrap: bool = False,
+                atom_types: List[int], bond_types: List[str], test_set: Optional[List[str]] = None,
+                batch_size: int = 32, validation_split: float = 0.1, bootstrap: bool = False,
                 random_state: int = 1, learning_rate: float = 1e-3, patience: int = None,
                 timeout: float = None)\
-        -> Tuple[List, dict]:
+        -> Union[Tuple[List, dict], Tuple[List, dict, List[float]]]:
     """Update a model with new training sets
 
     Args:
@@ -124,6 +124,7 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
         atom_types: List of known atom types
         bond_types: List of known bond types
         num_epochs: Maximum number of epochs to run
+        test_set: Hold-out set. If provided, this function will return predictions on this set
         batch_size: Number of molecules per training batch
         validation_split: Fraction of molecules used for the training/validation split
         bootstrap: Whether to perform a bootstrap sample of the dataset
@@ -139,15 +140,16 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
 
     # Rebuild the model from message
     model = model_msg.get_model()
-    return _train_model(model, database, num_epochs, atom_types, bond_types, batch_size, validation_split,
+    return _train_model(model, database, num_epochs, atom_types, bond_types, test_set, batch_size, validation_split,
                         bootstrap, random_state, learning_rate, patience, timeout)
 
 
 def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int,
-                 atom_types: List[int], bond_types: List[str], batch_size: int = 32,
-                 validation_split: float = 0.1, bootstrap: bool = False,
+                 atom_types: List[int], bond_types: List[str], test_set: Optional[List[str]] = None,
+                 batch_size: int = 32, validation_split: float = 0.1, bootstrap: bool = False,
                  random_state: int = 1, learning_rate: float = 1e-3,
-                 patience: int = None, timeout: float = None) -> Tuple[List, dict]:
+                 patience: int = None, timeout: float = None)\
+        -> Union[Tuple[List, dict], Tuple[List, dict, List[float]]]:
     """Train a model from initialized weights
 
     Args:
@@ -156,6 +158,7 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
         atom_types: List of known atom types
         bond_types: List of known bond types
         num_epochs: Maximum number of epochs to run
+        test_set: Hold-out set. If provided, this function will return predictions on this set
         batch_size: Number of molecules per training batch
         validation_split: Fraction of molecules used for the training/validation split
         bootstrap: Whether to perform a bootstrap sample of the dataset
@@ -165,8 +168,9 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
         patience: Number of epochs without improvement before terminating training.
         timeout: Maximum training time in seconds
     Returns:
-        model: Updated weights
-        history: Training history
+        - model: Updated weights
+        - history: Training history
+        - test_pred: Prediction on test set, if provided
     """
 
     # Make a copy of the model
@@ -180,15 +184,15 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
     except ValueError:
         pass
 
-    return _train_model(model, database, num_epochs, atom_types, bond_types, batch_size, validation_split,
+    return _train_model(model, database, num_epochs, atom_types, bond_types, test_set, batch_size, validation_split,
                         bootstrap, random_state, learning_rate, patience, timeout)
 
 
 def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: int,
-                 atom_types: List[int], bond_types: List[str], batch_size: int = 32,
-                 validation_split: float = 0.1, bootstrap: bool = False,
-                 random_state: int = 1, learning_rate: float = 1e-3,
-                 patience: int = None, timeout: float = None) -> Tuple[List, dict]:
+                 atom_types: List[int], bond_types: List[str], test_set: Optional[List[str]],
+                 batch_size: int = 32, validation_split: float = 0.1, bootstrap: bool = False,
+                 random_state: int = 1, learning_rate: float = 1e-3, patience: int = None,
+                 timeout: float = None) -> Union[Tuple[List, dict], Tuple[List, dict, List[float]]]:
     """Train a model
 
     Args:
@@ -196,6 +200,7 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
         database: Training dataset of molecule mapped to a property
         atom_types: List of known atom types
         bond_types: List of known bond types
+        test_set: Hold-out set. If provided, this function will return predictions on this set
         num_epochs: Maximum number of epochs to run
         batch_size: Number of molecules per training batch
         validation_split: Fraction of molecules used for the training/validation split
@@ -274,6 +279,11 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
     if np.isnan(history.history['loss']).any():
         raise ValueError('Training failed due to a NaN loss.')
 
+    # If provided, evaluate model on test set
+    test_pred = None
+    if test_set is not None:
+        test_pred = evaluate_mpnn([model], test_set, atom_types, bond_types, batch_size, cache=False)
+
     # Convert weights to numpy arrays (avoids mmap issues)
     weights = []
     for v in model.get_weights():
@@ -284,4 +294,7 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
 
     # Once we are finished training call "clear_session"
     tf.keras.backend.clear_session()
-    return weights, history.history
+    if test_pred is None:
+        return weights, history.history
+    else:
+        return weights, history.history, test_pred[:, 0].tolist()
