@@ -67,7 +67,8 @@ def test_retrieve_molecules(sample_db):
 
 
 def test_eligible_molecules(sample_db):
-    records = sample_db.get_eligible_molecules(['identifier.smiles'], ['data.xtb.neutral.atomization_energy.g4mp2'])
+    records = sample_db.get_eligible_molecules(['identifier.smiles', 'identifier.smiles'],
+                                               ['data.xtb.neutral.atomization_energy.g4mp2'])
     assert len(records['key']) == 1
     assert records['identifier.smiles'] == ['O']
 

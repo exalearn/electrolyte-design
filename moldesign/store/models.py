@@ -51,7 +51,7 @@ class OxidationState(str, Enum):
         elif net_charge == -1:
             return OxidationState.REDUCED
         else:
-            raise ValueError(f'Unrecognized charge state: {charge}')
+            raise ValueError(f'Unrecognized charge state, {charge}, for {smiles}')
 
 
 def get_charge(state: Union[OxidationState, str]) -> int:

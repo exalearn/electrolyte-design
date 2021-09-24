@@ -94,6 +94,7 @@ class MoleculePropertyDB:
 
         # Get the "exists" query fields
         must_exist = input_fields + ['identifier.inchi', 'key']
+        must_exist = list(set(must_exist))  # Remove duplicates
 
         # Build the query
         query = dict((v, {'$exists': True}) for v in must_exist)
