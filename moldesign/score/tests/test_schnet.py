@@ -40,15 +40,15 @@ def test_training(model, molecules):
     train_data = dict(zip(molecules, [0, 1, 2]))
 
     # Test a basic training
-    model, history = train_schnet(model, train_data, epochs=2, property_name='delta', bootstrap=True)
+    model, history = train_schnet(model, train_data, num_epochs=2, property_name='delta', bootstrap=True)
     assert len(history) == 2  # Two epochs
 
     # Test with a timeout
-    model, history = train_schnet(model, train_data, epochs=2000, property_name='delta', bootstrap=True, timeout=1)
+    model, history = train_schnet(model, train_data, num_epochs=2000, property_name='delta', bootstrap=True, timeout=1)
     assert len(history) < 2000
 
     # Test with a test set
-    model, history, y_pred = train_schnet(model, train_data, epochs=1, property_name='delta',
+    model, history, y_pred = train_schnet(model, train_data, num_epochs=1, property_name='delta',
                                           test_set=molecules, bootstrap=True)
     assert np.shape(y_pred) == (3,)
 

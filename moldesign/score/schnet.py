@@ -3,6 +3,7 @@ from time import monotonic
 from typing import Union, List, Optional, Dict, Tuple
 from tempfile import TemporaryDirectory
 from io import BytesIO, StringIO
+from pathlib import Path
 import os
 
 import pandas as pd
@@ -142,7 +143,7 @@ class TimeoutHook(trn.Hook):
             trainer._stop = True
 
 
-def evaluate_schnet(models: List[Union[TorchMessage, torch.nn.Module]],
+def evaluate_schnet(models: List[Union[TorchMessage, torch.nn.Module, Path]],
                     molecules: List[str], property_name: str,
                     batch_size: int = 64, device: str = 'cpu') -> np.ndarray:
     """Run inference for a machine learning model
@@ -159,6 +160,8 @@ def evaluate_schnet(models: List[Union[TorchMessage, torch.nn.Module]],
     # Make sure the models are converted to Torch models
     if isinstance(models[0], TorchMessage):
         models = [m.get_model(device) for m in models]
+    elif isinstance(models[0], (Path, str)):
+        models = [torch.load(m, map_location='cpu') for m in models]  # Load to main memory first
 
     # Make the dataset
     with TemporaryDirectory() as td:
@@ -190,9 +193,9 @@ def evaluate_schnet(models: List[Union[TorchMessage, torch.nn.Module]],
         return np.vstack(y_preds).T
 
 
-def train_schnet(model: Union[TorchMessage, torch.nn.Module],
+def train_schnet(model: Union[TorchMessage, torch.nn.Module, Path],
                  database: Dict[str, float],
-                 epochs: int,
+                 num_epochs: int,
                  reset_weights: bool = True,
                  property_name: str = 'output',
                  test_set: Optional[List[str]] = None,
@@ -206,7 +209,7 @@ def train_schnet(model: Union[TorchMessage, torch.nn.Module],
     Args:
         model: Model to be retrained
         database: Mapping of XYZ format structure to property
-        epochs: Number of training epochs
+        num_epochs: Number of training epochs
         property_name: Name of the property being predicted
         reset_weights: Whether to re-initialize weights before training, or start training from previous
         test_set: Hold-out set. If provided, function will return the performance of the model on those weights
@@ -227,6 +230,8 @@ def train_schnet(model: Union[TorchMessage, torch.nn.Module],
     # Make sure the models are converted to Torch models
     if isinstance(model, TorchMessage):
         model = model.get_model(device)
+    elif isinstance(model[0], (Path, str)):
+        model = torch.load(model, map_location='cpu')  # Load to main memory first
 
     # If desired, re-initialize weights
     if reset_weights:
@@ -275,7 +280,7 @@ def train_schnet(model: Union[TorchMessage, torch.nn.Module],
         loss = trn.build_mse_loss(['delta'])
         metrics = [spk.metrics.MeanSquaredError('delta')]
         if patience is None:
-            patience = epochs // 8
+            patience = num_epochs // 8
         hooks = [
             trn.CSVHook(log_path=td, metrics=metrics),
             trn.ReduceLROnPlateauHook(
@@ -296,10 +301,10 @@ def train_schnet(model: Union[TorchMessage, torch.nn.Module],
             optimizer=opt,
             train_loader=train_loader,
             validation_loader=valid_loader,
-            checkpoint_interval=epochs + 1  # Turns off checkpointing
+            checkpoint_interval=num_epochs + 1  # Turns off checkpointing
         )
 
-        trainer.train(device, n_epochs=epochs)
+        trainer.train(device, n_epochs=num_epochs)
 
         # Load in the best model
         model = torch.load(os.path.join(td, 'best_model'))
