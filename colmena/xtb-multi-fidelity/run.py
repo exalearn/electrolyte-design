@@ -122,6 +122,7 @@ class Thinker(BaseThinker):
         self.start_training = Event()  # Mark that retraining should start
         self.task_queue = Queue()  # Holds a list of tasks for inference
         self.inference_ready = Barrier(2)  # Wait until all agents are ready for inference, both complete
+        self.training_done = Barrier(2)
         self.max_ml_workers = 1
         self.inference_batch = 0
         self.inference_results = {}  # Output for inference results
@@ -274,6 +275,11 @@ class Thinker(BaseThinker):
                                                   'device': 'cuda', 'reset_weights': self.retrain_from_initial})
             self.logger.info(f'Submitted SchNet {mid} to train with {len(train_data)} entries')
 
+        # Wait for the run to finish
+        self.logger.info('Done submitting training jobs')
+        self.training_done.wait()
+        self.logger.info('Waiting until next training requested')
+
     @event_responder(event_name='start_training')
     def update_weights(self):
         """Process the results of the saved model"""
@@ -327,12 +333,14 @@ class Thinker(BaseThinker):
                     print(repr(history), file=fp)
 
         # Once all models are finished, set when we should train again and reset the flag
-        self.logger.info('All models have finished training')
         self.until_retrain = self.n_complete_before_reorder
+        self.logger.info('Done submitting training jobs')
+        self.training_done.wait()
         self.start_training.clear()
 
         # Make inference begin
         self.start_inference.set()
+        self.logger.info('Waiting until next training requested')
 
     @event_responder(event_name='start_inference', reallocate_resources=True, max_slots=1,
                      gather_from='simulation', gather_to='inference', disperse_to='simulation')
@@ -690,7 +698,7 @@ if __name__ == '__main__':
                       args.search_size,
                       args.retrain_frequency,
                       args.retrain_from_scratch,
-                      {'mpnn': args.mpnn_model_files, 'schnet': args.schnet_model_files},
+                      models,
                       {'mpnn': args.mpnn_calibration, 'schnet': args.schnet_calibration},
                       args.molecules_per_ml_task,
                       out_dir,

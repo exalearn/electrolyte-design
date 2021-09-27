@@ -3,10 +3,10 @@
 
 # Define the version of models to use
 mpnn_dir=../../notebooks/production-models/ip-vacuum_xtb/mpnn/bootstrap-ensemble/networks/
-mpnns=$(find $mpnn_dir -name best_model.h5 | sort | tail -n 8)
+mpnns=$(find $mpnn_dir -name best_model.h5 | sort | tail -n 2)
 
 schnet_dir=../../notebooks/production-models/ip-vacuum_xtb/schnet-delta_xtb-vertical/bootstrap-ensemble/networks/
-schnets=$(find $schnet_dir -name best_model | sort | tail -n 8)
+schnets=$(find $schnet_dir -name best_model | sort | tail -n 2)
 
 # Set the search space
 search_space=../../ai-components/search-spaces/QM9-search.tsv
