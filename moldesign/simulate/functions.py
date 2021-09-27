@@ -22,12 +22,13 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from moldesign.simulate.init_geom import fix_cyclopropenyl
+from moldesign.utils.chemistry import parse_from_molecule_string
 
 logger = logging.getLogger(__name__)
 _code = 'nwchem'  # Default software used for QC
 
 
-def generate_inchi_and_xyz(smiles: str, special_cases: bool = True) -> Tuple[str, str]:
+def generate_inchi_and_xyz(mol_string: str, special_cases: bool = True) -> Tuple[str, str]:
     """Generate the XYZ coordinates and InChI string for a molecule using
     a standard procedure.
 
@@ -42,7 +43,7 @@ def generate_inchi_and_xyz(smiles: str, special_cases: bool = True) -> Tuple[str
     1. Ensuring cyclopropenyl groups are planar
 
     Args:
-        smiles: SMILES string
+        mol_string: SMILES or InChI string
         special_cases: Whether to perform the post-processing
     Returns:
         - InChI string for the molecule
@@ -50,7 +51,7 @@ def generate_inchi_and_xyz(smiles: str, special_cases: bool = True) -> Tuple[str
     """
 
     # Generate 3D coordinates for the molecule
-    mol = Chem.MolFromSmiles(smiles)
+    mol = parse_from_molecule_string(mol_string)
     mol = Chem.AddHs(mol)
     AllChem.EmbedMolecule(mol, randomSeed=1)
     AllChem.MMFFOptimizeMolecule(mol)
@@ -70,7 +71,7 @@ def generate_inchi_and_xyz(smiles: str, special_cases: bool = True) -> Tuple[str
 
     # Special cases for odd kinds of molecules
     if special_cases:
-        fix_cyclopropenyl(xyz, smiles)
+        fix_cyclopropenyl(xyz, mol_string)
 
     return inchi, xyz
 

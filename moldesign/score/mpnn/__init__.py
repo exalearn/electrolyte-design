@@ -11,8 +11,7 @@ from moldesign.utils.globals import get_process_pool
 from moldesign.score.mpnn.callbacks import LRLogger, EpochTimeLogger, TimeLimitCallback
 from moldesign.score.mpnn.data import _merge_batch, GraphLoader
 from moldesign.score.mpnn.layers import custom_objects
-from moldesign.utils.conversions import convert_smiles_to_dict
-
+from moldesign.utils.conversions import convert_string_to_dict
 
 # Process-local caches
 _model_cache = {}  # Models loaded from disk
@@ -94,10 +93,10 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 
     # Convert all SMILES strings to batches of molecules
     if n_jobs == 1:
-        mols = [convert_smiles_to_dict(s, atom_types, bond_types, add_hs=True) for s in smiles]
+        mols = [convert_string_to_dict(s, atom_types, bond_types, add_hs=True) for s in smiles]
     else:
         pool = get_process_pool(n_jobs)
-        f = partial(convert_smiles_to_dict, atom_types=atom_types, bond_types=bond_types, add_hs=True)
+        f = partial(convert_string_to_dict, atom_types=atom_types, bond_types=bond_types, add_hs=True)
         mols = pool.map(f, smiles)
     chunks = [mols[start:start + batch_size] for start in range(0, len(mols), batch_size)]
     batches = [_merge_batch(c) for c in chunks]
@@ -110,7 +109,8 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
     return np.hstack(all_outputs)
 
 
-def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: int,
+def update_mpnn(model: Union[MPNNMessage, tf.keras.Model, Path, str],
+                database: Dict[str, float], num_epochs: int,
                 atom_types: List[int], bond_types: List[str], test_set: Optional[List[str]] = None,
                 batch_size: int = 32, validation_split: float = 0.1, bootstrap: bool = False,
                 random_state: int = 1, learning_rate: float = 1e-3, patience: int = None,
@@ -119,7 +119,7 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
     """Update a model with new training sets
 
     Args:
-        model_msg: Serialized version of the model
+        model: Serialized version of the model, the model to be retrain, or path to it on disk
         database: Training dataset of molecule mapped to a property
         atom_types: List of known atom types
         bond_types: List of known bond types
@@ -138,8 +138,12 @@ def update_mpnn(model_msg: MPNNMessage, database: Dict[str, float], num_epochs: 
         history: Training history
     """
 
-    # Rebuild the model from message
-    model = model_msg.get_model()
+    if isinstance(model, MPNNMessage):
+        # Rebuild the model from message
+        model = model.get_model()
+    elif isinstance(model, (Path, str)):
+        model = tf.keras.models.load_model(model, custom_objects=custom_objects)
+
     return _train_model(model, database, num_epochs, atom_types, bond_types, test_set, batch_size, validation_split,
                         bootstrap, random_state, learning_rate, patience, timeout)
 

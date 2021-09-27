@@ -5,6 +5,8 @@ import logging
 import numpy as np
 import networkx as nx
 
+from moldesign.utils.chemistry import parse_from_molecule_string
+
 try:
     from rdkit import Chem
 except ImportError:
@@ -84,19 +86,18 @@ def convert_nx_to_rdkit(graph: nx.Graph) -> 'Chem.Mol':
     return mol
 
 
-def convert_smiles_to_nx(smiles: str, add_hs: bool = False) -> nx.Graph:
+def convert_string_to_nx(mol_string: str, add_hs: bool = False) -> nx.Graph:
     """Compute a networkx graph from a SMILES string
 
     Args:
-        smiles (str): SMILES string to be parsed
-        add_hs (str): Whether to add explicit hydrogens
+        mol_string: InChI or SMILES string to be parsed
+        add_hs: Whether to add explicit hydrogens
     Returns:
         (nx.Graph) NetworkX representation of the molecule
     """
 
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError(f'Failed to parse smiles: {smiles}')
+    # Accept either an InChI or SMILES string
+    mol = parse_from_molecule_string(mol_string)
     if add_hs:
         mol = Chem.AddHs(mol)
 
@@ -159,7 +160,7 @@ def convert_nx_to_dict(graph: nx.Graph, atom_types: List[int], bond_types: List[
     }
 
 
-def convert_smiles_to_dict(smiles: str, atom_types: List[int], bond_types: List[str], add_hs: bool = False) -> dict:
+def convert_string_to_dict(smiles: str, atom_types: List[int], bond_types: List[str], add_hs: bool = False) -> dict:
     """Convert networkx representation of a molecule to an MPNN-ready dict
 
     Args:
@@ -170,5 +171,5 @@ def convert_smiles_to_dict(smiles: str, atom_types: List[int], bond_types: List[
     Returns:
         (dict) Molecule as a dict
     """
-    graph = convert_smiles_to_nx(smiles, add_hs=add_hs)
+    graph = convert_string_to_nx(smiles, add_hs=add_hs)
     return convert_nx_to_dict(graph, atom_types, bond_types)

@@ -8,30 +8,31 @@ from io import StringIO
 import networkx as nx
 import numpy as np
 
-from moldesign.utils.conversions import convert_smiles_to_nx
+from moldesign.utils.chemistry import parse_from_molecule_string
+from moldesign.utils.conversions import convert_string_to_nx
 
 logger = logging.getLogger(__name__)
 
 
-def fix_cyclopropenyl(xyz: str, smiles: str) -> str:
+def fix_cyclopropenyl(xyz: str, mol_string: str) -> str:
     """Detect cyclopropenyl groups and assure they are planar.
 
     Args:
         xyz: Current structure in XYZ format
-        smiles: SMILES string of the molecule
+        mol_string: SMILES or InChI string of the molecule
     Returns:
         Version of atoms with the rings flattened
     """
 
     # Find cyclopropenyl groups
-    mol = Chem.MolFromSmiles(smiles)
+    mol = parse_from_molecule_string(mol_string)
     rings = mol.GetSubstructMatches(Chem.MolFromSmarts("c1c[c+]1"))
     if len(rings) == 0:
         return xyz  # no changes
 
     # For each ring, flatten it
     atoms = next(simple_read_xyz(StringIO(xyz), slice(None)))
-    g = convert_smiles_to_nx(smiles, add_hs=True)
+    g = convert_string_to_nx(mol_string, add_hs=True)
     for ring in rings:
         # Get the normal of the ring
         normal = np.cross(*np.subtract(atoms.positions[ring[:2], :], atoms.positions[ring[2], :]))

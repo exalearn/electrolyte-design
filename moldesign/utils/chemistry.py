@@ -3,8 +3,26 @@
 from rdkit import Chem
 
 
+def parse_from_molecule_string(mol_string: str) -> Chem.Mol:
+    """Parse an RDKit molecule from either SMILES or InChI
+
+    Args:
+        mol_string: String representing a molecule
+    Returns:
+        RDKit molecule object
+    """
+
+    if mol_string.startswith('InChI='):
+        mol = Chem.MolFromInchi(mol_string)
+    else:
+        mol = Chem.MolFromSmiles(mol_string)
+    if mol is None:
+        raise ValueError(f'Failed to parse: {mol_string}')
+    return mol
+
+
 # TODO (wardlt): Consider whether this is too simple to be a utility operation
-def get_baseline_charge(smiles: str) -> int:
+def get_baseline_charge(mol_string: str) -> int:
     """Determine the charge on a molecule from its SMILES string
 
     Examples:
@@ -12,10 +30,10 @@ def get_baseline_charge(smiles: str) -> int:
         NH<sub>4</sub>+ has a baseline charge of +1
 
     Args:
-        smiles: SMILES string of the molecule
+        mol_string: SMILES string of the molecule
     Returns:
         Charge on the molecule
     """
 
-    mol = Chem.MolFromSmiles(smiles)
+    mol = parse_from_molecule_string(mol_string)
     return Chem.GetFormalCharge(mol)

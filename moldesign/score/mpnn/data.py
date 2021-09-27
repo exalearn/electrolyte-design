@@ -6,7 +6,7 @@ import tensorflow as tf
 import networkx as nx
 import numpy as np
 
-from moldesign.utils.conversions import convert_smiles_to_nx, convert_nx_to_dict
+from moldesign.utils.conversions import convert_string_to_nx, convert_nx_to_dict
 
 
 def _numpy_to_tf_feature(value):
@@ -268,7 +268,7 @@ class GraphLoader(tf.keras.utils.Sequence, tf.keras.callbacks.Callback):
         super(GraphLoader, self).__init__()
 
         # Convert the molecules to MPNN-ready formats
-        mols = [convert_nx_to_dict(convert_smiles_to_nx(s, add_hs=True), atom_types, bond_types) for s in smiles]
+        mols = [convert_nx_to_dict(convert_string_to_nx(s, add_hs=True), atom_types, bond_types) for s in smiles]
         self.entries = np.array(list(zip(mols, outputs)))
 
         # Other data

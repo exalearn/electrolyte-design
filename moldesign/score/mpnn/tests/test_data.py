@@ -2,14 +2,14 @@
 import tensorflow as tf
 
 from moldesign.score.mpnn.data import make_type_lookup_tables, make_tfrecord, make_data_loader
-from moldesign.utils.conversions import convert_smiles_to_nx, convert_nx_to_dict
+from moldesign.utils.conversions import convert_string_to_nx, convert_nx_to_dict
 
 
 def test_preprocess_and_loader(tmpdir, dataset):
     smiles, multis, scalars = dataset
 
     # Convert to needed formats
-    nxs = [convert_smiles_to_nx(s, add_hs=True) for s in smiles]
+    nxs = [convert_string_to_nx(s, add_hs=True) for s in smiles]
 
     # Save data as the
     atom_types, bond_types = make_type_lookup_tables(nxs)
