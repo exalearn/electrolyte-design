@@ -230,7 +230,7 @@ def train_schnet(model: Union[TorchMessage, torch.nn.Module, Path],
     # Make sure the models are converted to Torch models
     if isinstance(model, TorchMessage):
         model = model.get_model(device)
-    elif isinstance(model[0], (Path, str)):
+    elif isinstance(model, (Path, str)):
         model = torch.load(model, map_location='cpu')  # Load to main memory first
 
     # If desired, re-initialize weights
