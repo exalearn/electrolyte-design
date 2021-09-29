@@ -50,6 +50,19 @@ def local_config(log_dir: str, max_workers: int, prefetch: int = 0) -> Config:
             ),
             HighThroughputExecutor(
                 address=address_by_hostname(),
+                label="ml-worker-tensorflow-infer",  # Something about training and then running a model causes issues?
+                max_workers=1,
+                prefetch_capacity=prefetch,
+                provider=LocalProvider(
+                    nodes_per_block=1,
+                    init_blocks=1,
+                    max_blocks=1,
+                    worker_init='sleep 30',  # Give enough time for other workers to exit (memory!)
+                    launcher=SimpleLauncher(),  # Places worker on the launch node
+                )
+            ),
+            HighThroughputExecutor(
+                address=address_by_hostname(),
                 label="ml-worker-torch",
                 max_workers=1,
                 prefetch_capacity=prefetch,

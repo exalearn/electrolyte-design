@@ -73,13 +73,19 @@ associates each molecule task with the simulation method to be run if selected,
 prepares storage for the inference results,
 and then submits the inference tasks.
 Molecules to be evaluated are selected two ways:
-1. Identifying molecules from the user-provided search space that have yet to be simulated. These are candidates for computing the vertical IPs, and will be evaluated using the MPNNs.
-3. Querying MongoDB for molecules with vertical IPs but no adiabatic IP. These are candidates for computing adiabatic IPs and will be evaluated with the SchNet models.  
+   1. Identifying molecules from the user-provided search space that have yet to be simulated. These are candidates for computing the vertical IPs, and will be evaluated using the MPNNs.
+   2. Querying MongoDB for molecules with vertical IPs but no adiabatic IP. These are candidates for computing adiabatic IPs and will be evaluated with the SchNet models.
+
+If the models have not been retrained since the simulation selection was updated last, we only run the molecules 
+for which new simulation data has been acquired. 
 
 The *Record Inference* agent waits until the storage for the inference results is complete
 and then stores the results of the inference (predictions of molecular properties) into the pre-allocated arrays.
 Once all inference tasks are recorded, it computes the predicted IP and uncertainty in the prediction for all molecules
-and uses that information to prepare a **task list** of molecules to evaluate.
+and uses that information to prepare a **task queue** of molecules to evaluate.
+The task queue is a priority queue ordered by the score assigned to each molecule.
+If the models have been re-trained since the last time the inference was started,
+all current entires are deleted from the task queue.
 Each entry in the task list contains identity of the molecule (i.e., an InChI string),
 the name of the method to be run for that molecule,
 and some debugging information (e.g., the predicted IP and the prediction uncertainty).
@@ -116,5 +122,4 @@ The simulation recorder performs a several steps whenever an XTB task completes:
 
 There are still many places available for optimization
 
-- [ ] Re-evaluate only molecules with new data rather than entire search space
 - [ ] Perform model calibration after each model training

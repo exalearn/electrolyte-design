@@ -4,7 +4,8 @@ from functools import partial, update_wrapper
 from urllib import parse
 from pathlib import Path
 from datetime import datetime
-from queue import Queue, Empty
+from queue import Empty, PriorityQueue
+from dataclasses import dataclass, field
 from collections import defaultdict
 import argparse
 import logging
@@ -29,17 +30,25 @@ from colmena.thinker.resources import ResourceCounter
 from config import local_config
 from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, custom_objects
 from moldesign.score.schnet import train_schnet, evaluate_schnet
+from moldesign.store.models import MoleculeData
 from moldesign.store.mongo import MoleculePropertyDB
 from moldesign.store.recipes import apply_recipes
 from moldesign.utils.chemistry import get_baseline_charge
 from moldesign.utils import get_platform_info
-from sim import compute_adiabatic, compute_vertical
+from sim import compute_adiabatic, compute_vertical, compute_adiabatic_one_shot
 
 # Disable all GPUs for the planning process
 tf.config.set_visible_devices([], 'GPU')
 visible_devices = tf.config.get_visible_devices()
 for device in visible_devices:
     assert device.device_type != 'GPU'
+
+
+# Entry for the priority queue
+@dataclass(order=True)
+class _PriorityEntry:
+    score: float
+    item: dict = field(compare=False)
 
 
 class Thinker(BaseThinker):
@@ -59,7 +68,8 @@ class Thinker(BaseThinker):
                  beta: float,
                  random_seed: int,
                  low_fidelity: str,
-                 output_property: str):
+                 output_property: str,
+                 single_fidelity: bool):
         """
         Args:
             queues: Queues used to communicate with the method server
@@ -74,6 +84,7 @@ class Thinker(BaseThinker):
             random_seed: Random seed for the model (re)trainings
             low_fidelity: Name of the low-fidelity computation to be performed
             output_property: Name of the property to be computed
+            single_fidelity: Debug mode. Just run both levels of fidelity in one go
         """
         super().__init__(queues, ResourceCounter(num_workers, ['training', 'inference', 'simulation']), daemon=True)
 
@@ -89,6 +100,7 @@ class Thinker(BaseThinker):
         self.random_seed = random_seed
         self.low_fidelity = low_fidelity
         self.output_property = output_property
+        self.single_fidelity = single_fidelity
 
         # Store link to the database
         self.database = database
@@ -120,15 +132,19 @@ class Thinker(BaseThinker):
         # Inter-thread communication stuff
         self.start_inference = Event()  # Mark that inference should start
         self.start_training = Event()  # Mark that retraining should start
-        self.task_queue = Queue()  # Holds a list of tasks for inference
-        self.inference_ready = Barrier(2)  # Wait until all agents are ready for inference, both complete
+        self.task_queue = PriorityQueue()  # Holds a list of tasks for inference
+
         self.training_done = Barrier(2)
-        self.max_ml_workers = 1
+
+        self.to_reevaluate: List[MoleculeData] = []  # List of molecules to re-evaluate after a simulation has completed
+        self.new_model = True  # Used to determine if we need to re-compute scores for all molecules
         self.inference_batch = 0
+        self.inference_ready = Barrier(2)  # Wait until all agents are ready for inference, both complete
         self.inference_results = {}  # Output for inference results
         self.inference_inputs = {}  # InChI and, optionally,
 
         # Allocate maximum number of ML workers to inference, remainder to simulation
+        self.max_ml_workers = 1
         self.rec.reallocate(None, 'inference', self.max_ml_workers)
         if num_workers > self.max_ml_workers:
             self.rec.reallocate(None, 'simulation', num_workers - self.max_ml_workers)
@@ -139,14 +155,21 @@ class Thinker(BaseThinker):
     @task_submitter(task_type='simulation', n_slots=1)
     def launch_qc(self):
         # Get the next task
-        sim_info = self.task_queue.get()
+        entry: _PriorityEntry = self.task_queue.get()
+        sim_info = entry.item
 
         # Determine which level we are running
         method = sim_info['method']
         inchi = sim_info['inchi']
         self.logger.info(f'Running a {method} computation using {inchi}')
         self.already_ran[method].add(inchi)
-        if method == 'low_fidelity':
+        if self.single_fidelity:
+            # Baseline mode: Run both in one shot
+            self.search_space.remove(inchi)
+            self.queues.send_inputs(inchi, task_info=sim_info,
+                                    method='compute_adiabatic_one_shot', keep_inputs=True,
+                                    topic='simulate')
+        elif method == 'low_fidelity':
             self.search_space.remove(inchi)  # We've started to gather data for it
             self.queues.send_inputs(inchi, task_info=sim_info,
                                     method='compute_vertical', keep_inputs=True,
@@ -172,21 +195,23 @@ class Thinker(BaseThinker):
         # If successful, add to the database
         if result.success:
             self.n_evaluated += 1
-            self.until_reevaluate -= 1
-            self.logger.info(f'Computation success. {self.until_reevaluate} before reordering')
 
-            # Restart inference if we have had enough complete computations
-            if self.until_reevaluate <= 0 and not self.start_training.is_set():
-                self.logger.info('Triggering inference to begin again')
-                self.start_inference.set()
+            # Check if we are done
+            if self.n_evaluated >= self.n_to_evaluate:
+                self.logger.info(f'We have evaluated as many molecules as requested. exiting')
+                self.done.set()
 
             # Store the data in a molecule data object
-            data = self.database.get_molecule_record(inchi=inchi)
-            opt_record, spe_records = result.value
-            data.add_geometry(opt_record)
+            data = self.database.get_molecule_record(inchi=inchi)  # Get existing information
+            opt_records, spe_records = result.value
+            for r in opt_records:
+                data.add_geometry(r, overwrite=True)
             for r in spe_records:
                 data.add_single_point(r)
             apply_recipes(data)  # Compute the IP
+
+            # Add ionization potentials to the task_info
+            result.task_info['ips'] = data.oxidation_potential
 
             # Add to database
             with open(self.output_dir.joinpath('moldata-records.json'), 'a') as fp:
@@ -197,19 +222,24 @@ class Thinker(BaseThinker):
             if self.output_property.split(".")[-1] in data.oxidation_potential:
                 self.until_retrain -= 1
                 self.logger.info(f'High fidelity complete. {self.until_retrain} before retraining')
+            else:
+                self.to_reevaluate.append(data)
+                self.until_reevaluate -= 1
+                self.logger.info(f'Low fidelity complete. {self.until_reevaluate} before re-ordering')
 
-            if self.until_retrain <= 0:
+            # Check if we should re-do training
+            if self.until_retrain <= 0 and not self.done.is_set():
+                # If we have enough new
                 self.logger.info('Triggering training to start')
                 self.start_training.set()
-
-            # Check if we are done
-            if self.n_evaluated >= self.n_to_evaluate:
-                self.logger.info(f'We have evaluated as many molecules as requested. exiting')
-                self.done.set()
+            elif self.until_reevaluate <= 0 and not (self.start_training.is_set() or self.done.is_set()):
+                # Restart inference if we have had enough complete computations
+                self.logger.info('Triggering inference to begin again')
+                self.start_inference.set()
 
             # Write to disk
             with open(self.output_dir.joinpath('qcfractal-records.json'), 'a') as fp:
-                for r in [opt_record] + spe_records:
+                for r in opt_records + spe_records:
                     print(r.json(), file=fp)
             self.logger.info(f'Added complete calculation for {inchi} to database.')
         else:
@@ -255,10 +285,11 @@ class Thinker(BaseThinker):
             self.logger.info(f'Submitted MPNN {mid} to train with {len(train_data)} entries')
 
         # Then train the SchNet models
-        train_data = self.database.get_training_set(['data.xtb.neutral.xyz', 'oxidation_potential.xtb-vacuum-vertical'],
-                                                    [self.output_property])
+        train_data = self.database.get_training_set(
+            ['data.xtb.neutral.xyz', 'oxidation_potential.xtb-vacuum-vertical'], [self.output_property])
         train_data = pd.DataFrame(train_data)
-        train_data['delta'] = train_data[self.output_property] - train_data['oxidation_potential.xtb-vacuum-vertical']
+        train_data['delta'] = train_data[self.output_property] \
+                              - train_data['oxidation_potential.xtb-vacuum-vertical']
         train_data = dict(zip(train_data['data.xtb.neutral.xyz'], train_data['delta']))
         self.logger.info(f'Gathered {len(train_data)} molecules to train the SchNet models')
 
@@ -339,6 +370,7 @@ class Thinker(BaseThinker):
         self.start_training.clear()
 
         # Make inference begin
+        self.new_model = True  # Makes inference tasks re-run everything
         self.start_inference.set()
         self.logger.info('Waiting until next training requested')
 
@@ -348,24 +380,40 @@ class Thinker(BaseThinker):
         """Submit inference tasks for the yet-unlabelled samples"""
         self.logger.info('Beginning to submit inference tasks')
 
+        # Pull the search space
+        #  MPNN: We need the inchi strings
+        #  SchNet: We need the InChI, neutral geometry and low-fidelity IP
+        if self.new_model:  # Run all molecules that are eligible for either low or high-fidelity
+            self.logger.info('Re-running all molecules')
+            mpnn_search_space = list(self.search_space)  # Get a snapshot, in case it changes
+            schnet_search_space = self.database.get_eligible_molecules(
+                ['identifier.inchi', 'data.xtb.neutral.xyz', self.low_fidelity], [self.output_property])
+        else:  # Only run molecules where a simulation finished since the last re-ordering
+            self.logger.info('Only running molecules with new simulation data')
+            mpnn_search_space = []
+            schnet_search_space = {
+                'identifier.inchi': [x.identifier['inchi'] for x in self.to_reevaluate],
+                'data.xtb.neutral.xyz': [x.data['xtb']['neutral'].xyz for x in self.to_reevaluate],
+                self.low_fidelity: [x.oxidation_potential[self.low_fidelity.split(".")[-1]] for x in self.to_reevaluate]
+            }
+        self.to_reevaluate.clear()  # We always re-evaluate these points
+
         # Prepare storage for the inference recorder / task selector thread
         inference_chunks = {}  # Holds the inference for each type of model
         self.inference_results.clear()  # Holds the storage arrays for the outputs
         self.inference_inputs.clear()  # Holds the inputs to the simulations
 
-        # Detail the inputs and initialize the storage for the MPNN
-        search_space = list(self.search_space)  # Get a snapshot, in case it changes
-        self.inference_inputs['mpnn'] = [{'inchi': x, 'method': 'low_fidelity'} for x in search_space]
-        inference_chunks['mpnn'] = np.array_split(search_space, len(search_space) // self.inference_chunk_size + 1)
-        self.inference_results['mpnn'] = [
-            np.zeros((len(x), len(self.models['mpnn'])), dtype=np.float32) for x in inference_chunks['mpnn']
-        ]
-        self.logger.info(f'Submitting {len(search_space)} molecules to evaluate with MPNN.')
+        # Detail the inputs and result storage for the MPNN
+        if len(mpnn_search_space) > 0:
+            self.inference_inputs['mpnn'] = [{'inchi': x, 'method': 'low_fidelity'} for x in mpnn_search_space]
+            inference_chunks['mpnn'] = np.array_split(mpnn_search_space,
+                                                      len(mpnn_search_space) // self.inference_chunk_size + 1)
+            self.inference_results['mpnn'] = [
+                np.zeros((len(x), len(self.models['mpnn'])), dtype=np.float32) for x in inference_chunks['mpnn']
+            ]
+        self.logger.info(f'Submitting {len(mpnn_search_space)} molecules to evaluate with MPNN.')
 
-        # Detail the inputs for the delta learning model
-        schnet_search_space = self.database.get_eligible_molecules(['identifier.inchi', 'data.xtb.neutral.xyz',
-                                                                    self.low_fidelity],
-                                                                   [self.output_property])
+        # Detail the inputs and result storage for the delta learning model
         if len(schnet_search_space['identifier.inchi']) > 0:
             inference_chunks['schnet'] = np.array_split(
                 schnet_search_space['data.xtb.neutral.xyz'], len(schnet_search_space) // self.inference_chunk_size + 1
@@ -378,9 +426,10 @@ class Thinker(BaseThinker):
             init_schnet = np.tile(
                 np.array(schnet_search_space[self.low_fidelity], dtype=np.float32)[:, None],
                 (1, len(self.models['schnet']))
-            )
+            )  # Tile to create the same initial value for each model
             self.inference_results['schnet'] = np.array_split(init_schnet, len(inference_chunks['schnet']))
-        self.logger.info(f'Submitting {len(schnet_search_space["identifier.inchi"])} molecules to evaluate with SchNet.')
+        self.logger.info(
+            f'Submitting {len(schnet_search_space["identifier.inchi"])} molecules to evaluate with SchNet.')
 
         # Mark that we are ready to start inference
         self.inference_ready.wait()
@@ -448,15 +497,16 @@ class Thinker(BaseThinker):
         y_mean = np.concatenate([y_mean[t] for t in tags], axis=0)
         y_std = np.concatenate([y_std[t] for t in tags], axis=0)
         inputs = np.concatenate([self.inference_inputs[t] for t in tags], axis=0)
-        self._select_molecules(y_mean, y_std, inputs)
+        self._select_molecules(y_mean, y_std, inputs, reset_queue=self.new_model)  # Only reset if model is "new"
 
         # Mark that inference is complete
+        self.new_model = False  # We have now evaluated molecules with these models
         self.inference_ready.wait()
         self.until_reevaluate = self.n_complete_before_reorder
         self.start_inference.clear()
         self.inference_batch += 1
 
-    def _select_molecules(self, y_mean, y_std, inputs):
+    def _select_molecules(self, y_mean, y_std, inputs, reset_queue):
         """Select a list of molecules given the predictions from each model
 
         Adds them to the task queue
@@ -465,10 +515,17 @@ class Thinker(BaseThinker):
             y_mean: Mean of the predictions
             y_std: Standard deviation, scaled to calibrate the uncertainties
             inputs: Inputs for the simulation
+            reset_queue: Whether to reset the queue before adding new entries
         """
 
+        # Tell the user what you plan on doing
+        if reset_queue:
+            self.logger.info('Resetting the task queue.')
+        else:
+            self.logger.info(f'Adding {len(inputs)} new entries to priority queue')
+
         # Clear out the current queue. Prevents new simulations from starting while we pick taxes
-        while not self.task_queue.empty():
+        while reset_queue and not self.task_queue.empty():
             try:
                 self.task_queue.get(False)
             except Empty:
@@ -505,9 +562,10 @@ class Thinker(BaseThinker):
 
         # Put new tasks in the queue
         self.logger.info(f'Pushing {len(task_queue)} jobs to the task queue')
-        for i in task_queue:
-            self.task_queue.put(i)
-        self.logger.info('Updated task list')
+        for task_info in task_queue:
+            entry = _PriorityEntry(score=-task_info['ucb'], item=task_info)
+            self.task_queue.put(entry)  # Negative so largest UCB is first
+        self.logger.info(f'Updated task list. Current size: {self.task_queue.qsize()}')
 
 
 if __name__ == '__main__':
@@ -541,6 +599,8 @@ if __name__ == '__main__':
     parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
     parser.add_argument('--solvent', default=None, choices=[None],
                         help='Whether to compute solvation energy in a solvent / name of solvent')
+    parser.add_argument('--single-fidelity', action='store_true',
+                        help='Whether to actually run the single-fidelity baseline')
 
     # Active-learning related
     parser.add_argument("--search-size", default=200, type=int,
@@ -619,9 +679,14 @@ if __name__ == '__main__':
             shutil.copyfile(p, new_path)
             models[tag].append(new_path)
 
+    # If running single-fidelity, we don't need the schnet models
+    if args.single_fidelity:
+        models['schnet'].clear()
+
     # Set up the logging
     handlers = [logging.FileHandler(os.path.join(out_dir, 'runtime.log')),
                 logging.StreamHandler(sys.stdout)]
+
 
     class ParslFilter(logging.Filter):
         """Filter out Parsl debug logs"""
@@ -674,6 +739,8 @@ if __name__ == '__main__':
                                      patience=args.train_patience, timeout=args.train_timeout)
     my_compute_vertical = _fix_arguments(compute_vertical, dilation_factor=args.dilation_factor, solvent=args.solvent)
     my_compute_adiabatic = _fix_arguments(compute_adiabatic, dilation_factor=args.dilation_factor, solvent=args.solvent)
+    my_compute_both = _fix_arguments(compute_adiabatic_one_shot,
+                                     dilation_factor=args.dilation_factor, solvent=args.solvent)
 
     # Get the name of the output property
     output_prop = {
@@ -683,10 +750,12 @@ if __name__ == '__main__':
 
     # Create the method server and task generator
     tf_cfg = {'executors': ['ml-worker-tensorflow']}  # Separate executors to avoid memory problems
+    tfi_cfg = {'executors': ['ml-worker-tensorflow-infer']}  # Separate executors to avoid TF issue?
     th_cfg = {'executors': ['ml-worker-torch']}
     dft_cfg = {'executors': ['qc-worker']}
     doer = ParslTaskServer([(my_compute_vertical, dft_cfg), (my_compute_adiabatic, dft_cfg),
-                            (my_evaluate_mpnn, tf_cfg), (my_evaluate_schnet, th_cfg),
+                            (my_compute_both, dft_cfg),
+                            (my_evaluate_mpnn, tfi_cfg), (my_evaluate_schnet, th_cfg),
                             (my_update_mpnn, tf_cfg), (my_retrain_mpnn, tf_cfg), (my_train_schnet, th_cfg)],
                            server_queues, config)
 
@@ -705,7 +774,8 @@ if __name__ == '__main__':
                       args.beta,
                       args.random_seed,
                       f'{output_prop}-vertical',
-                      output_prop)
+                      output_prop,
+                      args.single_fidelity)
     logging.info('Created the task server and task generator')
 
     try:

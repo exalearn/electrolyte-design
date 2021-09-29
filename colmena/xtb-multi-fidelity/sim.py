@@ -34,7 +34,7 @@ def _run_with_delay(func, args, dilation_factor: float = 1):
 
 
 def _compute_vertical(smiles: str, solvent: Optional[str], spec_name: str = 'xtb') \
-        -> Tuple[OptimizationResult, List[AtomicResult]]:
+        -> Tuple[List[OptimizationResult], List[AtomicResult]]:
     """Run the ionization potential computation
 
     Args:
@@ -58,16 +58,16 @@ def _compute_vertical(smiles: str, solvent: Optional[str], spec_name: str = 'xtb
     # Perform the solvation energy computations, if desired
     if solvent is None:
         oxid_spe = run_single_point(neutral_xyz, DriverEnum.energy, spec, charge=init_charge + 1, code=code)
-        return neutral_relax, [oxid_spe]
+        return [neutral_relax], [oxid_spe]
 
     solv_spec, code = get_qcinput_specification(spec_name, solvent=solvent)
     neutral_solv = run_single_point(neutral_xyz, DriverEnum.energy, solv_spec, charge=init_charge, code=code)
     oxidized_solv = run_single_point(neutral_xyz, DriverEnum.energy, solv_spec, charge=init_charge + 1, code=code)
-    return neutral_relax, [neutral_solv, oxidized_solv]
+    return [neutral_relax], [neutral_solv, oxidized_solv]
 
 
 def compute_vertical(smiles: str, solvent: Optional[str] = None, dilation_factor: float = 1) \
-        -> Tuple[OptimizationResult, List[AtomicResult]]:
+        -> Tuple[List[OptimizationResult], List[AtomicResult]]:
     """Compute the vertical ionization potential
 
     Args:
@@ -80,7 +80,7 @@ def compute_vertical(smiles: str, solvent: Optional[str] = None, dilation_factor
 
 
 def _compute_adiabatic(xyz: str, init_charge: int, solvent: Optional[str], spec_name: str = 'xtb') \
-        -> Tuple[OptimizationResult, List[AtomicResult]]:
+        -> Tuple[List[OptimizationResult], List[AtomicResult]]:
     # Get the specification and make it more resilient
     spec, code = get_qcinput_specification(spec_name)
 
@@ -89,15 +89,15 @@ def _compute_adiabatic(xyz: str, init_charge: int, solvent: Optional[str], spec_
 
     # Perform the solvation energy computations, if desired
     if solvent is None:
-        return oxidized_relaxed, []
+        return [oxidized_relaxed], []
 
     solv_spec, code = get_qcinput_specification(spec_name, solvent=solvent)
     oxidized_solv = run_single_point(oxid_xyz, DriverEnum.energy, solv_spec, charge=init_charge + 1, code=code)
-    return oxidized_relaxed, [oxidized_solv]
+    return [oxidized_relaxed], [oxidized_solv]
 
 
 def compute_adiabatic(xyz: str, init_charge: int, solvent: Optional[str] = None, dilation_factor: float = 1) \
-        -> Tuple[OptimizationResult, List[AtomicResult]]:
+        -> Tuple[List[OptimizationResult], List[AtomicResult]]:
     """Compute the adiabatic ionization potential
 
     Args:
@@ -110,7 +110,31 @@ def compute_adiabatic(xyz: str, init_charge: int, solvent: Optional[str] = None,
     return _run_with_delay(_compute_adiabatic, (xyz, init_charge, solvent), dilation_factor)
 
 
+def compute_adiabatic_one_shot(smiles: str, solvent: Optional[str] = None, dilation_factor: float = 1) \
+        -> Tuple[List[OptimizationResult], List[AtomicResult]]:
+    """Compute the adiabatic energy in one shot
+
+    Args:
+        smiles: SMILES string of molecule to evaluate
+        solvent: Name of solvent to use when computing IP
+        dilation_factor: A factor by which to expand the runtime of the simulation
+            Used to emulate longer simulations without spending CPU cycles
+    """
+
+    # Run the vertical
+    vert_relax, vert_spe = _run_with_delay(_compute_vertical, (smiles, solvent), dilation_factor)
+
+    # Run the adiabatic
+    init_charge = get_baseline_charge(smiles)
+    xyz = vert_relax[0].final_molecule.to_string('xyz')
+    amb_relax, amb_spe = _run_with_delay(_compute_adiabatic, (xyz, init_charge, solvent), dilation_factor)
+    return vert_relax + amb_relax, vert_spe + amb_spe
+
+
 if __name__ == "__main__":
     neu_relax, _ = compute_vertical('C')
-    oxi_relax, _ = compute_adiabatic(neu_relax.final_molecule.to_string('xyz'), 0)
-    print(neu_relax.energies[-1] - oxi_relax.energies[-1])
+    oxi_relax, _ = compute_adiabatic(neu_relax[0].final_molecule.to_string('xyz'), 0)
+    print(neu_relax[0].energies[-1] - oxi_relax[0].energies[-1])
+
+    both_relax, both_spe = compute_adiabatic_one_shot('C')
+    print(both_relax[0].energies[-1] - both_relax[1].energies[-1])
