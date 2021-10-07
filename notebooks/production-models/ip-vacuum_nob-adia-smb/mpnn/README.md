@@ -1,0 +1,1 @@
+MPNN model to go from SMILES to IP directly
