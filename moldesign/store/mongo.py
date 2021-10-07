@@ -1,6 +1,7 @@
 """Thin wrapper over MongoDB"""
-from typing import List, Dict, Any, Set, Optional
+from typing import List, Dict, Any, Set, Optional, Tuple
 
+import pymongo
 from pymongo import MongoClient
 from pymongo.collection import Collection, UpdateResult
 from flatten_dict import flatten
@@ -92,25 +93,56 @@ class MoleculePropertyDB:
             A dictionary with keys of each input field. This will always include "identifier.inchi" and "key"
         """
 
+        # Launch the query
+        cursor, projection = self._query_eligible_molecules(input_fields, output_fields)
+
+        # Gather the inputs
+        inputs = dict((v, []) for v in projection)
+        for record in cursor:
+            record = flatten(record, 'dot')
+            for i in projection:
+                inputs[i].append(record[i])
+        return inputs
+
+    def get_eligible_molecule_records(self, input_fields: List[str], output_fields: List[str]) -> List[MoleculeData]:
+        """Gather molecules which are eligible for running a certain computation
+
+        Determines eligibility if certain input_fields are populated and the
+        output fields _are not set_.
+
+        Args:
+            input_fields: List of fields that must exist
+            output_fields: Which fields must not exist
+        Returns:
+            List of molecule data records. They only contain the fields listed
+        """
+
+        cursor, _ = self._query_eligible_molecules(input_fields, output_fields)
+        return [MoleculeData.parse_obj(record) for record in cursor]
+
+    def _query_eligible_molecules(self, input_fields, output_fields) -> Tuple[pymongo.cursor.Cursor, List[str]]:
+        """Start a query for eligible molecules (see :meth:`get_eligible_molecules`)
+
+        Args:
+            input_fields: List of fields that must exist
+            output_fields: Which fields must not exist
+        Returns:
+            - Cursor over matching records
+            - Fields that should be present in each record
+        """
+
         # Get the "exists" query fields
-        must_exist = input_fields + ['identifier.inchi', 'key']
-        must_exist = list(set(must_exist))  # Remove duplicates
+        projection = input_fields + ['identifier.inchi', 'key']
+        projection = list(set(projection))  # Remove duplicates
 
         # Build the query
-        query = dict((v, {'$exists': True}) for v in must_exist)
+        query = dict((v, {'$exists': True}) for v in projection)
         for f in output_fields:
             query[f] = {'$exists': False}
 
         # Run the query
-        cursor = self.collection.find(query, must_exist)
-
-        # Gather the inputs
-        inputs = dict((v, []) for v in must_exist)
-        for record in cursor:
-            record = flatten(record, 'dot')
-            for i in must_exist:
-                inputs[i].append(record[i])
-        return inputs
+        cursor = self.collection.find(query, projection)
+        return cursor, projection
 
     def update_molecule(self, molecule: MoleculeData) -> UpdateResult:
         """Update the data for a single molecule

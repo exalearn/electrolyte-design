@@ -71,6 +71,9 @@ def test_eligible_molecules(sample_db):
                                                ['data.xtb.neutral.atomization_energy.g4mp2'])
     assert len(records['key']) == 1
     assert records['identifier.smiles'] == ['O']
+    records = sample_db.get_eligible_molecule_records(['identifier.smiles', 'identifier.smiles'],
+                                                      ['data.xtb.neutral.atomization_energy.g4mp2'])
+    assert records[0].identifier['smiles'] == 'O'
 
     records = sample_db.get_eligible_molecules(['identifier.inchi', 'data.xtb.neutral.atomization_energy.xtb-no_zpe'],
                                                ['data.xtb.neutral.atomization_energy.g4mp2'])
