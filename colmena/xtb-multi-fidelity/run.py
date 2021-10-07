@@ -60,6 +60,7 @@ class Thinker(BaseThinker):
                  search_space: List[str],
                  n_to_evaluate: int,
                  n_complete_before_reorder: int,
+                 n_complete_before_retrain: int,
                  retrain_from_initial: bool,
                  models: Dict[str, List[Path]],
                  calibration_factor: Dict[str, float],
@@ -75,7 +76,8 @@ class Thinker(BaseThinker):
             queues: Queues used to communicate with the method server
             database: Link to the MongoDB instance used to store results
             search_space: List of InChI strings which define the search space
-            n_complete_before_reorder: Number of simulations to complete before retraining
+            n_complete_before_reorder: Number of simulations to complete before re-running inference
+            n_complete_before_retrain: Number of simulations to complete before retraining
             retrain_from_initial: Whether to update the model or retrain it from initial weights
             models: Path to models used for inference
             calibration_factor: Factor used to adjust the uncertainties
@@ -91,6 +93,7 @@ class Thinker(BaseThinker):
         # Configuration for the run
         self.inference_chunk_size = inference_chunk_size
         self.n_complete_before_reorder = n_complete_before_reorder
+        self.n_complete_before_retrain = n_complete_before_retrain
         self.retrain_from_initial = retrain_from_initial
         self.models = models.copy()
         self.calibration_factor = calibration_factor.copy()
@@ -111,7 +114,7 @@ class Thinker(BaseThinker):
         self.logger.info(f'Computations of {self.output_property} already complete for {len(already_done)} molecules')
         self.n_to_evaluate = n_to_evaluate
         self.n_evaluated = 0
-        self.until_retrain = self.n_complete_before_reorder
+        self.until_retrain = self.n_complete_before_retrain
         self.until_reevaluate = self.n_complete_before_reorder
 
         # Mark where we have worked before
@@ -364,7 +367,7 @@ class Thinker(BaseThinker):
                     print(repr(history), file=fp)
 
         # Once all models are finished, set when we should train again and reset the flag
-        self.until_retrain = self.n_complete_before_reorder
+        self.until_retrain = self.n_complete_before_retrain
         self.logger.info('Done submitting training jobs')
         self.training_done.wait()
         self.start_training.clear()
@@ -606,7 +609,10 @@ if __name__ == '__main__':
     parser.add_argument("--search-size", default=200, type=int,
                         help="Number of new molecules to evaluate during this search")
     parser.add_argument('--retrain-frequency', default=50, type=int,
-                        help="Number of completed computations that will trigger a retraining or reordering")
+                        help="Number of completed high-fidelity computations need to trigger model retraining")
+    parser.add_argument('--reorder-frequency', default=50, type=int,
+                        help="Number of completed low-fidelity computations "
+                             "need to trigger reordering the task list using new data")
     parser.add_argument("--molecules-per-ml-task", default=200000, type=int,
                         help="Number molecules per inference task")
     parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. "
@@ -765,6 +771,7 @@ if __name__ == '__main__':
                       mongo,
                       search_space,
                       args.search_size,
+                      args.reorder_frequency,
                       args.retrain_frequency,
                       args.retrain_from_scratch,
                       models,
