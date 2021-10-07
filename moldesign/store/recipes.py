@@ -2,7 +2,6 @@
 
 from .models import IonizationEnergyRecipe, MoleculeData, OxidationState
 
-
 redox_recipes = [
     IonizationEnergyRecipe(name='xtb-vacuum-vertical', geometry_level='xtb', energy_level='xtb', adiabatic=False),
     IonizationEnergyRecipe(name='xtb-vacuum', geometry_level='xtb', energy_level='xtb', adiabatic=True),
@@ -14,6 +13,8 @@ redox_recipes = [
                            energy_level='small_basis', adiabatic=True),
     IonizationEnergyRecipe(name='smb-vacuum', geometry_level='small_basis',
                            energy_level='small_basis', zpe_level='small_basis', adiabatic=True),
+    IonizationEnergyRecipe(name='nob-vacuum-smb-geom', geometry_level='small_basis',
+                           energy_level='normal_basis', adiabatic=True)
 ]
 
 
