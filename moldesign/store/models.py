@@ -1,7 +1,10 @@
 """Data models for storing molecular property data"""
+from hashlib import sha1
 from typing import Dict, List, Optional, Union, Tuple
 from enum import Enum
 
+import numpy as np
+from qcelemental.models.molecule import float_prep
 from qcfractal.interface import FractalClient
 from qcfractal.interface.models import OptimizationRecord, ResultRecord
 from rdkit import Chem
@@ -73,10 +76,30 @@ AccuracyLevel = str
 """Name of an accuracy level. Just a string with no other validation requirements"""
 
 SolventName = str
-"""Name fo the solvent"""
+"""Name of the solvent"""
 
 # Collections that store the properties of molecules and their geometries
 _prop_desc = "for the geometry in different oxidation states at different levels of accuracy."
+
+
+def get_hash(mol: Molecule) -> str:
+    """Get a rotation and charge-invariant hash of the molecule.
+
+    This is less sensitive than the hashing used by
+
+    Args:
+        mol: Molecule to be hashed
+    Returns:
+        Full hash string of the molecule
+    """
+
+    mol = Molecule.from_data(mol.to_string('xyz'), dtype='xyz', molecular_charge=0, orient=True)
+    data: np.ndarray = float_prep(mol.geometry, 3)
+
+    # Hash only the geometry (assume the masses etc are the same)
+    my_hash = sha1()
+    my_hash.update(data.tobytes())
+    return my_hash.hexdigest()
 
 
 class GeometryData(BaseModel):
@@ -84,7 +107,8 @@ class GeometryData(BaseModel):
 
     # Storing the geometry
     xyz: str = Field(..., description="3D coordinates of the molecule in XYZ format")
-    xyz_hash: str = Field(..., description="Hash of the 3D geometry produced by QCElemental")
+    xyz_hash: str = Field(..., description="Hash of the 3D geometry produced by QCElemental."
+                                           " We hash the oriented version of the molecule with a neutral charge (0).")
 
     # Provenance of the geometry
     fidelity: AccuracyLevel = Field(..., description="Level of the fidelity used to compute this molecule")
@@ -268,11 +292,11 @@ class MoleculeData(BaseModel):
             if name not in self.identifier:
                 self.identifier[name] = func(mol)
 
-    def match_geometry(self, xyz: str) -> Tuple[AccuracyLevel, OxidationState]:
+    def match_geometry(self, mol: Molecule) -> Tuple[AccuracyLevel, OxidationState]:
         """Match the geometry to one in this record
 
         Args:
-            xyz: Molecule structure in XYZ format
+            mol: Molecule structure in XYZ format
         Returns:
             - Accuracy level used to compute this structure
             - Oxidation state of this structure
@@ -281,7 +305,7 @@ class MoleculeData(BaseModel):
         """
 
         # Get the hash of my molecule
-        mol_hash = Molecule.from_data(xyz, dtype='xyz').get_hash()
+        mol_hash = get_hash(mol)
 
         # See if we can find a match
         for level, geoms in self.data.items():
@@ -314,7 +338,7 @@ class MoleculeData(BaseModel):
         else:
             geom = relax_record.final_molecule
         xyz = geom.to_string("xyz")
-        xyz_hash = Molecule.from_data(xyz, dtype="xyz").get_hash()
+        xyz_hash = get_hash(geom)
 
         # Get the charge state for the geometry
         oxidation_state = OxidationState.from_charge(round(geom.molecular_charge), self.identifier['smiles'])
@@ -342,7 +366,7 @@ class MoleculeData(BaseModel):
             geom = relax_record.initial_molecule
 
         try:
-            init_level, init_state = self.match_geometry(geom.to_string("xyz"))
+            init_level, init_state = self.match_geometry(geom)
         except UnmatchedGeometry:
             return
 
@@ -373,7 +397,7 @@ class MoleculeData(BaseModel):
             geom = record.get_molecule()
 
         # Match the geometry
-        geom_level, geom_state = self.match_geometry(geom.to_string("xyz"))
+        geom_level, geom_state = self.match_geometry(geom)
         geom_record = self.data[geom_level][geom_state]
 
         # Infer the method, if needed

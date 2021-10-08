@@ -1,9 +1,10 @@
 from pathlib import Path
 from math import isclose
 
-from qcelemental.models import OptimizationResult, AtomicResult
+from qcelemental.models import OptimizationResult, AtomicResult, Molecule
 
-from moldesign.store.models import MoleculeData, OxidationState, IonizationEnergyRecipe
+from moldesign.simulate.functions import generate_inchi_and_xyz
+from moldesign.store.models import MoleculeData, OxidationState, IonizationEnergyRecipe, get_hash
 
 _my_path = Path(__file__).parent
 
@@ -21,6 +22,18 @@ def test_from_inchi():
     assert md.key == "VNWKTOKETHGBQD-UHFFFAOYSA-N"
 
 
+def test_hash():
+    inchi, xyz = generate_inchi_and_xyz('O')
+    mol = Molecule.from_data(xyz, 'xyz')
+    assert mol.get_hash() != mol.orient_molecule().get_hash()
+    assert get_hash(mol) == get_hash(mol.orient_molecule())
+
+    ox_mol = Molecule.from_data(xyz, 'xyz', molecular_charge=1)
+    assert ox_mol.molecular_multiplicity != mol.molecular_multiplicity
+    assert mol.get_hash() != ox_mol.get_hash()
+    assert get_hash(mol) == get_hash(ox_mol.orient_molecule())
+
+
 def test_add_data():
     md = MoleculeData.from_identifier("O")
 
@@ -30,15 +43,15 @@ def test_add_data():
     assert "xtb" in md.data
     assert "neutral" in md.data["xtb"]
     assert isclose(md.data["xtb"][OxidationState.NEUTRAL].atomization_energy["xtb-no_zpe"], -0.515, abs_tol=1e-2)
-    assert ("xtb", "neutral") == md.match_geometry(xtb_geom.final_molecule.to_string("xyz"))
+    assert ("xtb", "neutral") == md.match_geometry(xtb_geom.final_molecule)
 
     # Load in a relaxed oxidized geometry
-    xtb_geom = OptimizationResult.parse_file(_my_path.joinpath('records/xtb-oxidized.json'))
-    md.add_geometry(xtb_geom)
+    xtb_geom_ox = OptimizationResult.parse_file(_my_path.joinpath('records/xtb-oxidized.json'))
+    md.add_geometry(xtb_geom_ox)
     assert "xtb" in md.data
     assert "oxidized" in md.data["xtb"]
-    assert ("xtb", "oxidized") == md.match_geometry(xtb_geom.final_molecule.to_string("xyz"))
-    assert ("xtb", "neutral") == md.match_geometry(xtb_geom.initial_molecule.to_string("xyz"))
+    assert ("xtb", "neutral") == md.match_geometry(xtb_geom_ox.initial_molecule)
+    assert ("xtb", "oxidized") == md.match_geometry(xtb_geom_ox.final_molecule)
     assert md.data['xtb'][OxidationState.OXIDIZED].total_energy[OxidationState.OXIDIZED]['xtb'] != \
            md.data['xtb'][OxidationState.NEUTRAL].total_energy[OxidationState.OXIDIZED]['xtb']
 
