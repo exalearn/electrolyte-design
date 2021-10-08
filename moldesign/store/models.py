@@ -136,6 +136,18 @@ class GeometryData(BaseModel):
         default_factory=dict, help="Atomization energy in Ha at different levels of accuracies"
     )
 
+    def update_derived_properties(self, verbose: bool = True):
+        """Update all derived properties for a molecule
+
+        Includes thermochemistry and lookup hashes
+
+        Args:
+            verbose: Whether to print out log messages
+        """
+
+        self.xyz_hash = get_hash(Molecule.from_data(self.xyz, 'xyz'))
+        self.update_thermochem(verbose=verbose)
+
     def update_thermochem(self, verbose: bool = False):
         """Compute the thermochemical properties using the available data
 
