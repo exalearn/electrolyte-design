@@ -274,7 +274,7 @@ def infer_specification_from_result(result: Union[AtomicResult, ResultRecord,
     for name, spec in _opt_specs.items():
         qc_spec = spec["qc_spec"]
         if qc_spec["method"].lower() == model.method.lower() and \
-                model.dict(include={'basis'}, exclude_none=True).get("basis", "") \
+                model.dict(include={'basis'}, exclude_none=True).get("basis", "").lower() \
                 == qc_spec.get("basis", "").lower():
 
             # Pull the solvent from the keywords
