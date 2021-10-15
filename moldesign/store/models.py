@@ -93,8 +93,8 @@ def get_hash(mol: Molecule) -> str:
         Full hash string of the molecule
     """
 
-    mol = Molecule.from_data(mol.to_string('xyz'), dtype='xyz', molecular_charge=0, orient=True)
-    data: np.ndarray = float_prep(mol.geometry, 3)
+    omol = mol.orient_molecule()
+    data: np.ndarray = float_prep(omol.geometry, 3)
 
     # Hash only the geometry (assume the masses etc are the same)
     my_hash = sha1()
@@ -304,11 +304,12 @@ class MoleculeData(BaseModel):
             if name not in self.identifier:
                 self.identifier[name] = func(mol)
 
-    def match_geometry(self, mol: Molecule) -> Tuple[AccuracyLevel, OxidationState]:
-        """Match the geometry to one in this record
+    def match_geometry(self, mol: Molecule, tolerance: float = 1e-4) -> Tuple[AccuracyLevel, OxidationState]:
+        """Match a geometry to one in this record
 
         Args:
             mol: Molecule structure in XYZ format
+            tolerance: RMSD tolerance when matching by alignment
         Returns:
             - Accuracy level used to compute this structure
             - Oxidation state of this structure
@@ -319,11 +320,20 @@ class MoleculeData(BaseModel):
         # Get the hash of my molecule
         mol_hash = get_hash(mol)
 
-        # See if we can find a match
+        # See if we can find a match based on hash
         for level, geoms in self.data.items():
             for state, geom in geoms.items():
                 if geom.xyz_hash == mol_hash:
                     return level, state
+
+        # If that fails, attempt to match based on alignment
+        for level, geoms in self.data.items():
+            for state, geom in geoms.items():
+                target_mol = Molecule.from_data(geom.xyz, 'xyz')
+                model, data = target_mol.align(mol, atoms_map=True)
+                if data['rmsd'] < tolerance:
+                    return level, state
+
         raise UnmatchedGeometry()
 
     def add_geometry(self, relax_record: Union[OptimizationResult, OptimizationRecord],
