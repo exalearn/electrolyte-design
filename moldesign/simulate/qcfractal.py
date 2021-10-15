@@ -375,8 +375,6 @@ class SinglePointDataset(QCFractalWrapper):
         self.coll.get_values()
 
         n_added = 0
-        assert self.qc_spec == dataset.qc_spec, "Datasets have different quantum chemistry specifications"
-
         # Get all of the geometries
         for inchi, geoms in dataset.get_geometries().items():
             for geom in geoms.values():
