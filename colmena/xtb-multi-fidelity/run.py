@@ -1,5 +1,5 @@
 from threading import Event, Barrier
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Tuple
 from functools import partial, update_wrapper
 from urllib import parse
 from pathlib import Path
@@ -21,6 +21,7 @@ import pandas as pd
 import tensorflow as tf
 import torch
 from rdkit import Chem
+from scipy.stats.distributions import norm
 from colmena.task_server import ParslTaskServer
 from colmena.models import Result
 from colmena.redis.queue import ClientQueues, make_queue_pairs
@@ -70,6 +71,7 @@ class Thinker(BaseThinker):
                  random_seed: int,
                  low_fidelity: str,
                  output_property: str,
+                 target_range: Tuple[float, float],
                  single_fidelity: bool):
         """
         Args:
@@ -86,6 +88,7 @@ class Thinker(BaseThinker):
             random_seed: Random seed for the model (re)trainings
             low_fidelity: Name of the low-fidelity computation to be performed
             output_property: Name of the property to be computed
+            target_range: Target range for the property
             single_fidelity: Debug mode. Just run both levels of fidelity in one go
         """
         super().__init__(queues, ResourceCounter(num_workers, ['training', 'inference', 'simulation']), daemon=True)
@@ -103,6 +106,7 @@ class Thinker(BaseThinker):
         self.random_seed = random_seed
         self.low_fidelity = low_fidelity
         self.output_property = output_property
+        self.target_range = target_range
         self.single_fidelity = single_fidelity
 
         # Store link to the database
@@ -535,8 +539,9 @@ class Thinker(BaseThinker):
                 continue
 
         # Rank compounds according to the upper confidence bound
-        ucb = y_mean + self.beta * y_std
-        sort_ids = list(np.argsort(ucb))  # Sorted worst to best (ascending)
+        dists = norm(loc=y_mean, scale=y_std)
+        prob = dists.cdf(self.target_range[1]) - dists.cdf(self.target_range[0])
+        sort_ids = list(np.argsort(prob))  # Sorted worst to best (ascending)
 
         # Make a temporary copy as a List, which means we can easily judge its size
         task_queue = []
@@ -552,7 +557,7 @@ class Thinker(BaseThinker):
             # Store the inference results
             mol_data['mean'] = float(y_mean[mol_id])  # Converts from np.float32, which is not JSON serializable
             mol_data['std'] = float(y_std[mol_id])
-            mol_data['ucb'] = float(ucb[mol_id])
+            mol_data['prob'] = float(prob[mol_id])
 
             # Add it to list if hasn't already been ran
             #  There are cases where a computation could have been run between when inference started and now
@@ -566,7 +571,7 @@ class Thinker(BaseThinker):
         # Put new tasks in the queue
         self.logger.info(f'Pushing {len(task_queue)} jobs to the task queue')
         for task_info in task_queue:
-            entry = _PriorityEntry(score=-task_info['ucb'], item=task_info)
+            entry = _PriorityEntry(score=-task_info['prob'], item=task_info)
             self.task_queue.put(entry)  # Negative so largest UCB is first
         self.logger.info(f'Updated task list. Current size: {self.task_queue.qsize()}')
 
@@ -604,6 +609,8 @@ if __name__ == '__main__':
                         help='Whether to compute solvation energy in a solvent / name of solvent')
     parser.add_argument('--single-fidelity', action='store_true',
                         help='Whether to actually run the single-fidelity baseline')
+    parser.add_argument('--target-range', default=(15.5, np.inf), type=float, nargs=2,
+                        help='Target range (min, max) for IP')
 
     # Active-learning related
     parser.add_argument("--search-size", default=200, type=int,
@@ -782,6 +789,7 @@ if __name__ == '__main__':
                       args.random_seed,
                       f'{output_prop}-vertical',
                       output_prop,
+                      args.target_range,
                       args.single_fidelity)
     logging.info('Created the task server and task generator')
 
