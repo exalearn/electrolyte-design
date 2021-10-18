@@ -54,15 +54,12 @@ class MPNNMessage:
 
 # TODO (wardlt): Split into multiple functions? I don't like having so many input type options
 def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List[str], List[Path]],
-                  smiles: List[str], atom_types: List[int], bond_types: List[str],
-                  batch_size: int = 128, cache: bool = True, n_jobs: Optional[int] = 1) -> np.ndarray:
+                  smiles: List[str], batch_size: int = 128, cache: bool = True, n_jobs: Optional[int] = 1) -> np.ndarray:
     """Run inference on a list of molecules
 
     Args:
         model_msg: List of MPNNs to evaluate. Accepts either a pickled message, model, or a path
         smiles: List of molecules to evaluate
-        atom_types: List of known atom types
-        bond_types: List of known bond types
         batch_size: Number of molecules per batch
         cache: Whether to cache models if being read from disk
         n_jobs: Number of parallel jobs to run. Set `None` to use total number of cores
@@ -93,11 +90,10 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 
     # Convert all SMILES strings to batches of molecules
     if n_jobs == 1:
-        mols = [convert_string_to_dict(s, atom_types, bond_types) for s in smiles]
+        mols = [convert_string_to_dict(s) for s in smiles]
     else:
         pool = get_process_pool(n_jobs)
-        f = partial(convert_string_to_dict, atom_types=atom_types, bond_types=bond_types)
-        mols = pool.map(f, smiles)
+        mols = pool.map(convert_string_to_dict, smiles)
     chunks = [mols[start:start + batch_size] for start in range(0, len(mols), batch_size)]
     batches = [_merge_batch(c) for c in chunks]
 
@@ -110,8 +106,7 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 
 
 def update_mpnn(model: Union[MPNNMessage, tf.keras.Model, Path, str],
-                database: Dict[str, float], num_epochs: int,
-                atom_types: List[int], bond_types: List[str], test_set: Optional[List[str]] = None,
+                database: Dict[str, float], num_epochs: int, test_set: Optional[List[str]] = None,
                 batch_size: int = 32, validation_split: float = 0.1, bootstrap: bool = False,
                 random_state: int = 1, learning_rate: float = 1e-3, patience: int = None,
                 timeout: float = None)\
@@ -121,8 +116,6 @@ def update_mpnn(model: Union[MPNNMessage, tf.keras.Model, Path, str],
     Args:
         model: Serialized version of the model, the model to be retrain, or path to it on disk
         database: Training dataset of molecule mapped to a property
-        atom_types: List of known atom types
-        bond_types: List of known bond types
         num_epochs: Maximum number of epochs to run
         test_set: Hold-out set. If provided, this function will return predictions on this set
         batch_size: Number of molecules per training batch
@@ -144,12 +137,11 @@ def update_mpnn(model: Union[MPNNMessage, tf.keras.Model, Path, str],
     elif isinstance(model, (Path, str)):
         model = tf.keras.models.load_model(model, custom_objects=custom_objects)
 
-    return _train_model(model, database, num_epochs, atom_types, bond_types, test_set, batch_size, validation_split,
+    return _train_model(model, database, num_epochs, test_set, batch_size, validation_split,
                         bootstrap, random_state, learning_rate, patience, timeout)
 
 
-def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int,
-                 atom_types: List[int], bond_types: List[str], test_set: Optional[List[str]] = None,
+def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int, test_set: Optional[List[str]] = None,
                  batch_size: int = 32, validation_split: float = 0.1, bootstrap: bool = False,
                  random_state: int = 1, learning_rate: float = 1e-3,
                  patience: int = None, timeout: float = None)\
@@ -159,8 +151,6 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
     Args:
         model_config: Serialized version of the model
         database: Training dataset of molecule mapped to a property
-        atom_types: List of known atom types
-        bond_types: List of known bond types
         num_epochs: Maximum number of epochs to run
         test_set: Hold-out set. If provided, this function will return predictions on this set
         batch_size: Number of molecules per training batch
@@ -188,12 +178,11 @@ def retrain_mpnn(model_config: dict, database: Dict[str, float], num_epochs: int
     except ValueError:
         pass
 
-    return _train_model(model, database, num_epochs, atom_types, bond_types, test_set, batch_size, validation_split,
+    return _train_model(model, database, num_epochs, test_set, batch_size, validation_split,
                         bootstrap, random_state, learning_rate, patience, timeout)
 
 
-def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: int,
-                 atom_types: List[int], bond_types: List[str], test_set: Optional[List[str]],
+def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: int, test_set: Optional[List[str]],
                  batch_size: int = 32, validation_split: float = 0.1, bootstrap: bool = False,
                  random_state: int = 1, learning_rate: float = 1e-3, patience: int = None,
                  timeout: float = None) -> Union[Tuple[List, dict], Tuple[List, dict, List[float]]]:
@@ -202,8 +191,6 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
     Args:
         model: Model to be trained
         database: Training dataset of molecule mapped to a property
-        atom_types: List of known atom types
-        bond_types: List of known bond types
         test_set: Hold-out set. If provided, this function will return predictions on this set
         num_epochs: Maximum number of epochs to run
         batch_size: Number of molecules per training batch
@@ -242,8 +229,8 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
         train_y = train_y[sample]
 
     # Make the training data loaders
-    train_loader = GraphLoader(train_X, atom_types, bond_types, train_y, batch_size=batch_size, shuffle=True)
-    val_loader = GraphLoader(valid_X, atom_types, bond_types, valid_y, batch_size=batch_size, shuffle=False)
+    train_loader = GraphLoader(train_X, train_y, batch_size=batch_size, shuffle=True)
+    val_loader = GraphLoader(valid_X, valid_y, batch_size=batch_size, shuffle=False)
 
     # Make the callbacks
     final_learn_rate = 1e-6
@@ -286,7 +273,7 @@ def _train_model(model: tf.keras.Model, database: Dict[str, float], num_epochs: 
     # If provided, evaluate model on test set
     test_pred = None
     if test_set is not None:
-        test_pred = evaluate_mpnn([model], test_set, atom_types, bond_types, batch_size, cache=False)
+        test_pred = evaluate_mpnn([model], test_set, batch_size, cache=False)
 
     # Convert weights to numpy arrays (avoids mmap issues)
     weights = []

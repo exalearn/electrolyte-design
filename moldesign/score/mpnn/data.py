@@ -48,29 +48,6 @@ def make_tfrecord(network):
     return example_proto.SerializeToString()
 
 
-def make_type_lookup_tables(graphs: List[nx.Graph]) -> Tuple[List[int], List[str]]:
-    """Create lists of observed atom and bond types
-
-    Args:
-        graphs: List of molecules expressed as graphs
-    Returns:
-        - List of atom types (elements)
-        - List of bond types (elements)
-    """
-
-    # Initialize the lists
-    atom_types = set()
-    bond_types = set()
-
-    # Get all types observed in these graphs
-    for graph in graphs:
-        atom_types.update([x['atomic_num'] for _, x in graph.nodes(data=True)])
-        bond_types.update([str(x['bond_type']) for _, _, x in graph.edges(data=True)])
-
-    # Return as sorted lists
-    return sorted(atom_types), sorted(bond_types)
-
-
 def parse_records(example_proto, target_name: str = 'pIC50',
                   target_shape: Sequence[int] = ()):
     """Parse data from the TFRecord
@@ -251,14 +228,12 @@ class GraphLoader(tf.keras.utils.Sequence, tf.keras.callbacks.Callback):
 
     Styled after the NFP TFv1 data loader: https://github.com/NREL/nfp/blob/0.0.x/nfp/preprocessing/sequence.py"""
 
-    def __init__(self, smiles: List[str], atom_types: List[int], bond_types: List[str],
-                 outputs: List[float], batch_size: int, shuffle: bool = True, random_state: int = None):
+    def __init__(self, smiles: List[str], outputs: List[float], batch_size: int,
+                 shuffle: bool = True, random_state: int = None):
         """
 
         Args:
             smiles: List of molecules
-            atom_types: List of known atom types
-            bond_types: List of known bond types
             outputs: List of molecular outputs
             batch_size: Number of batches to use to train model
             shuffle: Whether to shuffle after each epoch
@@ -268,7 +243,7 @@ class GraphLoader(tf.keras.utils.Sequence, tf.keras.callbacks.Callback):
         super(GraphLoader, self).__init__()
 
         # Convert the molecules to MPNN-ready formats
-        mols = [convert_nx_to_dict(convert_string_to_nx(s), atom_types, bond_types) for s in smiles]
+        mols = [convert_nx_to_dict(convert_string_to_nx(s)) for s in smiles]
         self.entries = np.array(list(zip(mols, outputs)))
 
         # Other data

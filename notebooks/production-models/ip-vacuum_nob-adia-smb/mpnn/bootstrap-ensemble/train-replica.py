@@ -56,12 +56,6 @@ if __name__ == "__main__":
     val_loader = make_data_loader(os.path.join(data_dir, 'valid_data.proto'),
                                   batch_size=args.batch_size, output_property='output')
 
-    # Load in the bond and atom type information
-    with open(os.path.join('..', '..', 'atom_types.json')) as fp:
-        atom_type_count = len(json.load(fp))
-    with open(os.path.join('..', '..', 'bond_types.json')) as fp:
-        bond_type_count = len(json.load(fp))
-
     # Make the model, loading it by the 
     model = load_model(os.path.join(model_dir, 'best_model.h5'), custom_objects=custom_objects)
     model_config = model.get_config()

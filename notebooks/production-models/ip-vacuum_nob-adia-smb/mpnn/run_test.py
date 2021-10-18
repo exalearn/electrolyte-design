@@ -7,7 +7,7 @@ from typing import List
 from pathlib import Path
 
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.layers import Input, Dense, Lambda
 from tensorflow.keras.models import Model
 from tensorflow.keras import callbacks as cb
 from scipy.stats import spearmanr, kendalltau
@@ -24,7 +24,7 @@ output = 'output'
 
 def build_fn(atom_features: int = 64, message_steps: int = 8,
              output_layers: List[int] = (512, 256, 128), reduce_fn: str = 'softmax',
-             atomic_contribution: bool = False):
+             atomic_contribution: bool = False, minimum: bool = False):
     node_graph_indices = Input(shape=(1,), name='node_graph_indices', dtype='int32')
     atom_types = Input(shape=(1,), name='atom', dtype='int32')
     bond_types = Input(shape=(1,), name='bond', dtype='int32')
@@ -35,10 +35,14 @@ def build_fn(atom_features: int = 64, message_steps: int = 8,
     satom_types = Squeeze(axis=1)(atom_types)
     sbond_types = Squeeze(axis=1)(bond_types)
 
-    output = GraphNetwork(atom_type_count, bond_type_count, atom_features, message_steps,
+    output = GraphNetwork(35, 4, atom_features, message_steps,
                           output_layer_sizes=output_layers,
                           atomic_contribution=atomic_contribution, reduce_function=reduce_fn,
                           name='mpnn')([satom_types, sbond_types, snode_graph_indices, connectivity])
+    
+    # If we want to use the minimum rather than maximum function, return the negative of the output networks
+    if minimum:
+        output = Lambda(lambda x: -x, name='flip_sign')(output)
 
     # Scale the output
     output = Dense(1, activation='linear', name='scale')(output)
@@ -53,10 +57,11 @@ if __name__ == "__main__":
     arg_parser.add_argument('--atom-features', help='Number of atomic features', type=int, default=128)
     arg_parser.add_argument('--num-messages', help='Number of message-passing layers', type=int, default=8)
     arg_parser.add_argument('--output-layers', help='Number of hidden units of the output layers', type=int,
-                            default=(512, 256, 128), nargs='*')
+                            default=(256, 128, 64), nargs='*')
     arg_parser.add_argument('--batch-size', help='Number of molecules per batch', type=int, default=32)
     arg_parser.add_argument('--num-epochs', help='Number of epochs to run', type=int, default=64)
     arg_parser.add_argument('--readout-fn', default='softmax', help='Readout function')
+    arg_parser.add_argument('--minimum', action='store_true', help='Use the minimum as the readout function not maximum')
     arg_parser.add_argument('--overwrite', action='store_true', help='Whether to overwrite existing runs.')
     arg_parser.add_argument('--atomwise', action='store_true', help='Use an atomic contribution network')
 
@@ -79,16 +84,10 @@ if __name__ == "__main__":
     val_loader = make_data_loader(str(_data_dir / 'valid_data.proto'),
                                   batch_size=args.batch_size, output_property=output, cache=True)
 
-    # Load in the bond and atom type information
-    with open(_data_dir / '../atom_types.json') as fp:
-        atom_type_count = len(json.load(fp))
-    with open(_data_dir / '../bond_types.json') as fp:
-        bond_type_count = len(json.load(fp))
-
     # Make the model
     model = build_fn(atom_features=args.atom_features, message_steps=args.num_messages,
                      output_layers=args.output_layers, reduce_fn=args.readout_fn,
-                     atomic_contribution=args.atomwise)
+                     atomic_contribution=args.atomwise, minimum=args.minimum)
 
     # Set the scale for the output parameter
     ic50s = np.concatenate([x[1].numpy() for x in iter(train_loader)], axis=0)

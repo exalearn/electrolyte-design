@@ -18,7 +18,7 @@ import numpy as np
 from moldesign.score.schnet import Moleculewise
 
 
-def build_fn(atom_features: int = 128, message_steps: int = 8,
+def build_fn(atom_features: int = 128, message_steps: int = 3,
              atomwise: bool = False, output_layers: int = 3, reduce_fn: str = 'sum',
              mean: Optional[float] = None, std: Optional[float] = None):
     schnet = spk.representation.SchNet(
@@ -33,6 +33,7 @@ def build_fn(atom_features: int = 128, message_steps: int = 8,
     else:
         output = Moleculewise(n_in=atom_features, n_layers=output_layers, aggregation_mode=reduce_fn,
                               mean=mean, stddev=std, property='delta')
+
     return spk.AtomisticModel(representation=schnet, output_modules=output)
 
 
