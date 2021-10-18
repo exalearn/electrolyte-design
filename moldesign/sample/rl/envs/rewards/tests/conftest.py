@@ -5,7 +5,7 @@ from tensorflow.keras.models import load_model
 from pytest import fixture
 
 from moldesign.score.mpnn.layers import custom_objects
-from moldesign.utils.conversions import convert_smiles_to_nx
+from moldesign.utils.conversions import convert_string_to_nx
 
 
 _home_dir = os.path.dirname(__file__)
@@ -19,7 +19,7 @@ def oneshot_model():
 
 @fixture
 def target_mols():
-    return [convert_smiles_to_nx(x) for x in ['CCC', 'CCCC']]
+    return [convert_string_to_nx(x) for x in ['CCC', 'CCCC']]
 
 
 @fixture

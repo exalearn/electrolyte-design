@@ -32,7 +32,7 @@ def fix_cyclopropenyl(xyz: str, mol_string: str) -> str:
 
     # For each ring, flatten it
     atoms = next(simple_read_xyz(StringIO(xyz), slice(None)))
-    g = convert_string_to_nx(mol_string, add_hs=True)
+    g = convert_string_to_nx(mol_string)
     for ring in rings:
         # Get the normal of the ring
         normal = np.cross(*np.subtract(atoms.positions[ring[:2], :], atoms.positions[ring[2], :]))

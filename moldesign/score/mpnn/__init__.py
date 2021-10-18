@@ -93,10 +93,10 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
 
     # Convert all SMILES strings to batches of molecules
     if n_jobs == 1:
-        mols = [convert_string_to_dict(s, atom_types, bond_types, add_hs=True) for s in smiles]
+        mols = [convert_string_to_dict(s, atom_types, bond_types) for s in smiles]
     else:
         pool = get_process_pool(n_jobs)
-        f = partial(convert_string_to_dict, atom_types=atom_types, bond_types=bond_types, add_hs=True)
+        f = partial(convert_string_to_dict, atom_types=atom_types, bond_types=bond_types)
         mols = pool.map(f, smiles)
     chunks = [mols[start:start + batch_size] for start in range(0, len(mols), batch_size)]
     batches = [_merge_batch(c) for c in chunks]

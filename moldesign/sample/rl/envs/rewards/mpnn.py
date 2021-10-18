@@ -14,7 +14,7 @@ from moldesign.score.mpnn.layers import custom_objects
 class MPNNReward(RewardFunction):
 
     def __init__(self, model: Model, atom_types: List[int], bond_types: List[str],
-                 maximize: bool = True, big_value: float = 100., add_hs: bool = False):
+                 maximize: bool = True, big_value: float = 100.):
         """
         Args:
             model: Keras MPNN model (trained using the tools in this package)
@@ -22,14 +22,12 @@ class MPNNReward(RewardFunction):
             bond_types: List of known bond types
             maximize: Whether to maximize or minimize the target function
             big_value: Stand-in value to use for compounds the MPNN fails on
-            add_hs: Whether you need to add hydrogens to a graph before evaluating it
         """
         super().__init__(maximize)
         self.model = model
         self.atom_types = atom_types
         self.bond_types = bond_types
         self.big_value = abs(big_value)
-        self.add_hs = add_hs
         if self.maximize:
             self.big_value *= -1
 
@@ -53,10 +51,9 @@ class MPNNReward(RewardFunction):
 
     def _call(self, graph: nx.Graph) -> float:
         # If needed, add Hs to the network
-        if self.add_hs:
-            mol = convert_nx_to_rdkit(graph)
-            mol = Chem.AddHs(mol)
-            graph = convert_rdkit_to_nx(mol)
+        mol = convert_nx_to_rdkit(graph)
+        mol = Chem.AddHs(mol)
+        graph = convert_rdkit_to_nx(mol)
 
         # Convert the graph to dict format, and add in "node_graph_indices"
         entry = convert_nx_to_dict(graph, self.atom_types, self.bond_types)

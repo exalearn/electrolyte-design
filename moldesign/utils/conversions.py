@@ -86,20 +86,18 @@ def convert_nx_to_rdkit(graph: nx.Graph) -> 'Chem.Mol':
     return mol
 
 
-def convert_string_to_nx(mol_string: str, add_hs: bool = False) -> nx.Graph:
+def convert_string_to_nx(mol_string: str) -> nx.Graph:
     """Compute a networkx graph from a SMILES string
 
     Args:
         mol_string: InChI or SMILES string to be parsed
-        add_hs: Whether to add explicit hydrogens
     Returns:
         (nx.Graph) NetworkX representation of the molecule
     """
 
     # Accept either an InChI or SMILES string
     mol = parse_from_molecule_string(mol_string)
-    if add_hs:
-        mol = Chem.AddHs(mol)
+    mol = Chem.AddHs(mol)
 
     return convert_rdkit_to_nx(mol)
 
@@ -160,16 +158,15 @@ def convert_nx_to_dict(graph: nx.Graph, atom_types: List[int], bond_types: List[
     }
 
 
-def convert_string_to_dict(smiles: str, atom_types: List[int], bond_types: List[str], add_hs: bool = False) -> dict:
+def convert_string_to_dict(smiles: str, atom_types: List[int], bond_types: List[str]) -> dict:
     """Convert networkx representation of a molecule to an MPNN-ready dict
 
     Args:
         smiles: Molecule to be converted
         atom_types: Lookup table of observed atom types
         bond_types: Lookup table of observed bond types
-        add_hs: Whether to add explicit hydrogens
     Returns:
         (dict) Molecule as a dict
     """
-    graph = convert_string_to_nx(smiles, add_hs=add_hs)
+    graph = convert_string_to_nx(smiles)
     return convert_nx_to_dict(graph, atom_types, bond_types)

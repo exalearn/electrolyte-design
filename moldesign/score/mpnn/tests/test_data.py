@@ -9,7 +9,7 @@ def test_preprocess_and_loader(tmpdir, dataset):
     smiles, multis, scalars = dataset
 
     # Convert to needed formats
-    nxs = [convert_string_to_nx(s, add_hs=True) for s in smiles]
+    nxs = [convert_string_to_nx(s) for s in smiles]
 
     # Save data as the
     atom_types, bond_types = make_type_lookup_tables(nxs)

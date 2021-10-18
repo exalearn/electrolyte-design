@@ -7,7 +7,7 @@ from gym import Space
 
 from moldesign.sample.rl.envs.actions.utils import rdkit, get_valid_actions
 # TODO (wardlt): Extract a base class that defines the interface for `update_actions`
-from moldesign.utils.conversions import convert_nx_to_smiles, convert_smiles_to_nx
+from moldesign.utils.conversions import convert_nx_to_smiles, convert_string_to_nx
 
 
 class MoleculeActions(Space):
@@ -101,4 +101,4 @@ class MoleculeActions(Space):
         )
 
         # Get only those actions which are in the desired space
-        self._valid_actions = [convert_smiles_to_nx(x) for x in valid_actions if x in allowed_space]
+        self._valid_actions = [convert_string_to_nx(x) for x in valid_actions if x in allowed_space]
