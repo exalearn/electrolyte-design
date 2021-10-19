@@ -21,9 +21,8 @@ mongo_pid=$!
 
 # Run!
 # Calibration factors are determined in notebooks/production-models/**/calibration-results.csv
-python run.py --mpnn-config-directory $mpnn_dir/../../.. \
-    --mpnn-model-files $mpnns \
-    --mpnn-calibration 1.64 \
+python run.py --mpnn-model-files $mpnns \
+    --mpnn-calibration 1.50 \
     --schnet-model-files $schnets \
     --schnet-calibration 2.21 \
     --search-space $search_space \

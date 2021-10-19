@@ -585,8 +585,6 @@ if __name__ == '__main__':
                         help="Port on which redis is available")
 
     # Model-related configuration
-    parser.add_argument('--mpnn-config-directory', help='Directory containing the MPNN-related JSON files',
-                        required=True)
     parser.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
     parser.add_argument('--mpnn-calibration', default=1, help='Calibration for MPNN uncertainties', type=float)
 
@@ -634,28 +632,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     run_params = args.__dict__
 
-    # Load in the model configuration
-    with open(os.path.join(args.mpnn_config_directory, 'atom_types.json')) as fp:
-        atom_types = json.load(fp)
-    with open(os.path.join(args.mpnn_config_directory, 'bond_types.json')) as fp:
-        bond_types = json.load(fp)
-
     # Connect to MongoDB
     mongo_url = parse.urlparse(args.mongo_url)
     mongo = MoleculePropertyDB.from_connection_info(mongo_url.hostname, mongo_url.port)
 
-    # Load in the search space
-    def _only_known_elements(inchi: str):
-        mol = rdkit.Chem.MolFromInchi(inchi)
-        if mol is None:
-            return False
-        return all(
-            e.GetAtomicNum() in atom_types for e in mol.GetAtoms()
-        )
-
-
     full_search = pd.read_csv(args.search_space, delim_whitespace=True)
-    #  search_space = full_search[full_search['inchi'].apply(_only_known_elements)]['inchi'].values
     search_space = full_search['inchi'].values
 
     # Create an output directory with the time and run parameters
@@ -735,14 +716,11 @@ if __name__ == '__main__':
         return update_wrapper(my_func, func)
 
 
-    my_evaluate_mpnn = _fix_arguments(evaluate_mpnn, atom_types=atom_types, bond_types=bond_types,
-                                      batch_size=args.batch_size, cache=False, n_jobs=8)
+    my_evaluate_mpnn = _fix_arguments(evaluate_mpnn, batch_size=args.batch_size, cache=False, n_jobs=8)
     my_update_mpnn = _fix_arguments(update_mpnn, num_epochs=args.num_epochs,
-                                    atom_types=atom_types, bond_types=bond_types,
                                     learning_rate=args.learning_rate, bootstrap=True, batch_size=args.batch_size,
                                     patience=args.train_patience, timeout=args.train_timeout)
     my_retrain_mpnn = _fix_arguments(retrain_mpnn, num_epochs=args.num_epochs,
-                                     atom_types=atom_types, bond_types=bond_types,
                                      learning_rate=args.learning_rate, bootstrap=True, batch_size=args.batch_size,
                                      patience=args.train_patience, timeout=args.train_timeout)
     my_evaluate_schnet = _fix_arguments(evaluate_schnet, property_name='delta', batch_size=args.batch_size)
