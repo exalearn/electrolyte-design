@@ -476,7 +476,7 @@ class IonizationEnergyRecipe(BaseModel):
 
     # Defining the accuracy level at which to compute the geometries for ion and neutral
     geometry_level: AccuracyLevel = Field(..., help="Accuracy level at which to compute the geometries")
-    adiabatic: bool = Field(True, help="Whether to compute the adiabatic or the ")
+    adiabatic: bool = Field(True, help="Whether to compute the adiabatic or the vertical redox potential")
 
     # Defining the level used to get the total energy, ZPE and solvation energy
     energy_level: AccuracyLevel = Field(..., help="Accuracy level used to compute the total energies")
@@ -521,8 +521,8 @@ class IonizationEnergyRecipe(BaseModel):
             ])
         return output
 
-    def compute_ionization_potential(self, mol_data: MoleculeData,
-                                     oxidation_state: Union[str, OxidationState]) -> float:
+    def compute_redox_potential(self, mol_data: MoleculeData,
+                                oxidation_state: Union[str, OxidationState]) -> float:
         """Compute and store the ionization energy for a certain molecule
 
         Args:

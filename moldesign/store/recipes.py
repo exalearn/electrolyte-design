@@ -14,7 +14,9 @@ redox_recipes = [
     IonizationEnergyRecipe(name='smb-vacuum', geometry_level='small_basis',
                            energy_level='small_basis', zpe_level='small_basis', adiabatic=True),
     IonizationEnergyRecipe(name='nob-vacuum-smb-geom', geometry_level='small_basis',
-                           energy_level='normal_basis', adiabatic=True)
+                           energy_level='normal_basis', adiabatic=True),
+    IonizationEnergyRecipe(name='dfb-vacuum-smb-geom', geometry_level='small_basis',
+                           energy_level='diffuse_basis', adiabatic=True),
 ]
 
 
@@ -29,6 +31,6 @@ def apply_recipes(data: MoleculeData):
     for state in [OxidationState.OXIDIZED, OxidationState.REDUCED]:
         for recipe in redox_recipes:
             try:
-                recipe.compute_ionization_potential(data, state)
+                recipe.compute_redox_potential(data, state)
             except (ValueError, KeyError):
                 continue
