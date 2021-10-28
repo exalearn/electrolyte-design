@@ -4,7 +4,7 @@ from math import isclose
 from qcelemental.models import OptimizationResult, AtomicResult, Molecule
 
 from moldesign.simulate.functions import generate_inchi_and_xyz
-from moldesign.store.models import MoleculeData, OxidationState, IonizationEnergyRecipe, get_hash
+from moldesign.store.models import MoleculeData, OxidationState, RedoxEnergyRecipe, get_hash
 
 _my_path = Path(__file__).parent
 
@@ -69,17 +69,17 @@ def test_add_data():
     assert "acetonitrile" in md.data['xtb']['oxidized'].solvation_energy['oxidized']
 
     # Show that we can compute a redox potential
-    recipe = IonizationEnergyRecipe(name="xtb-vertical", geometry_level="xtb", energy_level="xtb", adiabatic=False)
+    recipe = RedoxEnergyRecipe(name="xtb-vertical", geometry_level="xtb", energy_level="xtb", adiabatic=False)
     result = recipe.compute_redox_potential(md, OxidationState.OXIDIZED)
     assert md.oxidation_potential['xtb-vertical'] == result
 
-    recipe = IonizationEnergyRecipe(name="xtb", geometry_level="xtb", energy_level="xtb", adiabatic=True)
+    recipe = RedoxEnergyRecipe(name="xtb", geometry_level="xtb", energy_level="xtb", adiabatic=True)
     result = recipe.compute_redox_potential(md, OxidationState.OXIDIZED)
     assert md.oxidation_potential['xtb'] == result
     assert md.oxidation_potential['xtb'] < md.oxidation_potential['xtb-vertical']
 
-    recipe = IonizationEnergyRecipe(name="xtb-acn", geometry_level="xtb", energy_level="xtb", adiabatic=True,
-                                    solvent='acetonitrile', solvation_level='xtb')
+    recipe = RedoxEnergyRecipe(name="xtb-acn", geometry_level="xtb", energy_level="xtb", adiabatic=True,
+                               solvent='acetonitrile', solvation_level='xtb')
     result = recipe.compute_redox_potential(md, OxidationState.OXIDIZED)
     assert md.oxidation_potential['xtb-acn'] == result
     assert md.oxidation_potential['xtb-acn'] != md.oxidation_potential['xtb']

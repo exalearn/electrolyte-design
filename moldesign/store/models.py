@@ -467,7 +467,7 @@ class MoleculeData(BaseModel):
 
 
 # Definitions for schematics for how to compute geometries
-class IonizationEnergyRecipe(BaseModel):
+class RedoxEnergyRecipe(BaseModel):
     """Defines the inputs needed to compute the ionization energy of a molecule"""
 
     # General information about the redox computation
