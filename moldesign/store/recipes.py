@@ -15,6 +15,8 @@ redox_recipes = [
                            energy_level='small_basis', zpe_level='small_basis', adiabatic=True),
     IonizationEnergyRecipe(name='nob-vacuum-smb-geom', geometry_level='small_basis',
                            energy_level='normal_basis', adiabatic=True),
+    IonizationEnergyRecipe(name='nob-acn-smb-geom', solvent='acetntrl', geometry_level='small_basis',
+                           energy_level='normal_basis', solvation_level='normal_basis', adiabatic=True),
     IonizationEnergyRecipe(name='dfb-vacuum-smb-geom', geometry_level='small_basis',
                            energy_level='diffuse_basis', adiabatic=True),
 ]
