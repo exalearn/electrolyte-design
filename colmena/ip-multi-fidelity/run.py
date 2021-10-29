@@ -1,5 +1,5 @@
 from threading import Event, Barrier
-from typing import List, Dict, Union, Tuple
+from typing import List, Dict, Union, Tuple, Optional
 from functools import partial, update_wrapper
 from urllib import parse
 from pathlib import Path
@@ -10,7 +10,6 @@ from collections import defaultdict
 import argparse
 import logging
 import hashlib
-import shutil
 import json
 import sys
 import os
@@ -29,9 +28,9 @@ from colmena.thinker.resources import ResourceCounter
 from config import theta_nwchem_config
 from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, custom_objects
 from moldesign.score.schnet import train_schnet, evaluate_schnet
-from moldesign.store.models import MoleculeData, OxidationState, UnmatchedGeometry
+from moldesign.store.models import MoleculeData, OxidationState, UnmatchedGeometry, RedoxEnergyRecipe
 from moldesign.store.mongo import MoleculePropertyDB
-from moldesign.store.recipes import apply_recipes
+from moldesign.store.recipes import apply_recipes, get_recipe_by_name
 from moldesign.utils.chemistry import get_baseline_charge
 from moldesign.utils import get_platform_info
 from sim import compute_adiabatic, compute_vertical, compute_single_point
@@ -68,9 +67,9 @@ class Thinker(BaseThinker):
                  output_dir: Union[str, Path],
                  beta: float,
                  random_seed: int,
-                 output_property: str,
-                 target_range: Tuple[float, float],
-                 solvent: str):
+                 oxidize: bool,
+                 target_recipe: RedoxEnergyRecipe,
+                 target_range: Tuple[float, float]):
         """
         Args:
             queues: Queues used to communicate with the method server
@@ -82,8 +81,8 @@ class Thinker(BaseThinker):
             retrain_from_initial: Whether to update the model or retrain it from initial weights
             models: Path to models used for inference. Keys are the name of the computation that
                 each type of model is used to decide whether to run for a molecule:
-                - `vertical` are MPNN models that determine if we should run an initial, vertical IP;
-                - `adiabatic` are SchNet models that determine if we should run an adiabatic IP with a small basis set
+                - `vertical` are MPNN models that determine if we should run an initial, vertical redox;
+                - `adiabatic` are SchNet models that determine if we should run an adiabatic redox with a small basis set
                 - `normal` are SchNet models that determine if we should re-compute energies with a normal basis set
             calibration_factor: Factor used to adjust the uncertainties
             inference_chunk_size: Maximum number of molecules per inference task
@@ -92,7 +91,8 @@ class Thinker(BaseThinker):
             beta: Amount to weight uncertainty in the activation function
             random_seed: Random seed for the model (re)trainings
             target_range: Target range for the property
-            output_property: Name of the property to be computed
+            oxidize: Whether to compute the oxidation instead of the reduction potential
+            target_level: Name of the final level of the property to be computed
         """
         super().__init__(queues, ResourceCounter(num_workers, ['training', 'inference', 'simulation']), daemon=True)
 
@@ -108,8 +108,11 @@ class Thinker(BaseThinker):
         self.beta = beta
         self.nodes_per_qc = nodes_per_qc
         self.random_seed = random_seed
-        self.output_property = output_property
-        self.solvent = solvent
+        self.target_recipe = target_recipe
+        self.oxidize = oxidize
+        self.oxidation_state = OxidationState.OXIDIZED if oxidize else OxidationState.REDUCED
+        self.output_property =  ('oxidation' if oxidize else 'reduction') + f"_potential.{target_recipe.name}"
+        self.solvent = target_recipe.solvent
         self.target_range = target_range
 
         # Store link to the database
@@ -129,11 +132,13 @@ class Thinker(BaseThinker):
 
         # Prepare search space for low and high fidelity computation
         self.search_space = set(search_space)
-        self.yet_unevaluated = self.search_space.copy()  #
+        self.yet_unevaluated = self.search_space.copy()  # Start off with all of the molecules
         self.logger.info(f'Loaded a search space of {len(self.yet_unevaluated)} molecules')
 
         self.yet_unevaluated.difference_update(already_done)
-        for low in ['oxidation_potential.smb-vacuum-vertical', 'oxidation_potential.smb-vacuum-no-zpe']:
+        self.logger.info(f'A total of {len(self.yet_unevaluated)} have yet to be fully-evaluated')
+        output_tag = 'oxidation_potential' if self.oxidize else 'reduction_potential'
+        for low in [f'{output_tag}.smb-vacuum-vertical', f'{output_tag}.smb-vacuum-no-zpe']:
             low_fidelity_ready = self.database.get_eligible_molecules([low], [self.output_property])['identifier.inchi']
             self.logger.info(f'There are {len(low_fidelity_ready)} molecules with {low} available.'
                              f' Some may be outside the search space')
@@ -170,46 +175,63 @@ class Thinker(BaseThinker):
         # Determine which level we are running
         method = sim_info['method']
         inchi = sim_info['inchi']
+
+        # Get some basic information on the molecule
+        record = self.database.get_molecule_record(inchi=inchi)
+        neutral_charge = get_baseline_charge(inchi)
+        redox_charge = neutral_charge + (1 if self.oxidize else -1)
+
         self.logger.info(f'Running {method} computation(s) for {inchi}')
         self.already_ran[method].add(inchi)
         if method == 'compute_vertical':
             self.yet_unevaluated.remove(inchi)  # We've started to gather data for it
-            self.queues.send_inputs(inchi, task_info=sim_info,
-                                    method='compute_vertical', keep_inputs=True,
-                                    topic='simulate')
+
+            # Check if we need to run the neutral relaxation
+            if self.target_recipe.geometry_level in record.data and \
+                    OxidationState.NEUTRAL in record.data[self.target_recipe.geometry_level]:
+                # If already have the neutral, just submit the vertical
+                neutral_xyz = record.data[self.target_recipe.geometry_level][OxidationState.NEUTRAL].xyz
+                self.queues.send_inputs(neutral_xyz, redox_charge, None, self.target_recipe.geometry_level,
+                                        method='compute_single_point', task_info=sim_info,
+                                        topic='simulate', keep_inputs=True)
+            else:
+                self.queues.send_inputs(inchi, self.oxidize, task_info=sim_info,
+                                        method='compute_vertical', keep_inputs=True,
+                                        topic='simulate')
         elif method == 'compute_adiabatic':
             xyz = sim_info['xyz']
-            init_charge = get_baseline_charge(inchi)
-            self.queues.send_inputs(xyz, init_charge, task_info=sim_info,
+            self.queues.send_inputs(xyz, neutral_charge, self.oxidize, task_info=sim_info,
                                     method='compute_adiabatic', keep_inputs=True,
                                     topic='simulate')
         elif method == 'compute_single_point':
-            # Load in the molecular structures, get the 
-            record = self.database.get_molecule_record(inchi=inchi)
-            init_charge = get_baseline_charge(inchi)
+            # Determine which computations we need to run, defined by the geometry and the charge
+            to_run: List[Tuple[str, int, Optional[str]]] = []
+            geom_level_data = record.data[self.target_recipe.geometry_level]
+            for (ox_state, charge) in zip((OxidationState.NEUTRAL, self.oxidation_state),
+                                       (neutral_charge, redox_charge)):
+                # See if we've done the computation in vacuum
+                if self.target_recipe.energy_level not in geom_level_data[ox_state].total_energy[ox_state]:
+                    to_run.append((geom_level_data[ox_state].xyz, charge, None))
+
+                # Check if we need the computation in solvent
+                if self.solvent is not None and \
+                        (ox_state not in geom_level_data[ox_state].total_energy_in_solvent or
+                         self.solvent not in geom_level_data[ox_state].total_energy_in_solvent[ox_state] or 
+                         self.target_recipe.energy_level not in geom_level_data[ox_state].total_energy_in_solvent[ox_state][self.solvent]):
+                    to_run.append((geom_level_data[ox_state].xyz, charge, self.solvent))
+            self.logger.info(f'Submitting {len(to_run)} single point computations to finish high-fidelity')
 
             # Send the single points one after each other
             first = True
-            for xyz, charge in [(record.data['small_basis'][OxidationState.NEUTRAL].xyz, init_charge),
-                                (record.data['small_basis'][OxidationState.OXIDIZED].xyz, init_charge + 1)]:
+            for run_args in to_run:
                 # We need to request more resources after the first submission
                 if first:
                     first = False
                 else:
                     self.rec.acquire('simulation', self.nodes_per_qc)
-                    
-                # Submit energy in vacuum
-                self.queues.send_inputs(xyz, charge, task_info=sim_info,
+                self.queues.send_inputs(*run_args, self.target_recipe.energy_level, task_info=sim_info,
                                         method='compute_single_point', keep_inputs=True,
                                         topic='simulate')
-
-                # If desired, submit energy in a solvent
-                if self.solvent is not None:
-                    self.rec.acquire('simulation', self.nodes_per_qc)
-                    self.queues.send_inputs(xyz, charge, self.solvent, task_info=sim_info,
-                                            method='compute_single_point', keep_inputs=True,
-                                            topic='simulate')
-
         else:
             raise ValueError(f'Method "{method}" not recognized')
 
@@ -248,11 +270,13 @@ class Thinker(BaseThinker):
                     data.add_single_point(r)
                 store_success = True
             except UnmatchedGeometry:
-                self.logger.warning(f'Failed to match {inchi} geometry to an existing record. Tell Logan his hashes are broken again!')
+                self.logger.warning(f'Failed to match {inchi} geometry to an existing record.'
+                                    ' Tell Logan his hashes are broken again!')
             apply_recipes(data)  # Compute the IP
 
             # Add ionization potentials to the task_info
             result.task_info['ips'] = data.oxidation_potential
+            result.task_info['eas'] = data.reduction_potential
 
             # Add to database
             with open(self.output_dir.joinpath('moldata-records.json'), 'a') as fp:
@@ -260,10 +284,11 @@ class Thinker(BaseThinker):
             self.database.update_molecule(data)
 
             # Mark if we have completed a new record of the output property
-            if self.output_property.split(".")[-1] in data.oxidation_potential:  # All SPE are complete
+            outputs = data.oxidation_potential if self.oxidize else data.reduction_potential
+            if self.target_recipe.name in outputs:  # All SPE are complete
                 self.until_retrain -= 1
                 self.logger.info(f'High fidelity complete. {self.until_retrain} before retraining')
-            elif result.method != "compute_single_point" and store_success:
+            elif result.task_info['method'] != "compute_single_point" and store_success:
                 self.until_reevaluate -= 1
                 self.logger.info(f'Low fidelity complete. {self.until_reevaluate} before re-ordering')
                 if result.method == 'compute_vertical':
@@ -327,9 +352,11 @@ class Thinker(BaseThinker):
             self.logger.info(f'Submitted MPNN {mid} to train with {len(train_data)} entries')
 
         # Then train the SchNet models
+        pot_name = 'oxidation_potential' if self.oxidize else 'reduction_potential'
+        ox_name = OxidationState.OXIDIZED if self.oxidize else OxidationState.REDUCED
         for level, xyz, low_res in [
-            ('adiabatic', 'data.small_basis.neutral.xyz', 'oxidation_potential.smb-vacuum-vertical'),
-            ('normal', 'data.small_basis.oxidized.xyz', 'oxidation_potential.smb-vacuum-no-zpe')
+            ('adiabatic', 'data.small_basis.neutral.xyz', f'{pot_name}.smb-vacuum-vertical'),
+            ('normal', f'data.small_basis.{ox_name}.xyz', f'{pot_name}.smb-vacuum-no-zpe')
         ]:
             train_data = self.database.get_training_set([xyz, low_res], [self.output_property])
             train_data = pd.DataFrame(train_data)
@@ -431,17 +458,18 @@ class Thinker(BaseThinker):
         # Pull the search space in a compact form
         #  MPNN: We need the inchi strings
         #  SchNet: We need the InChI, neutral geometry and low-fidelity IP
+        pot_name = 'oxidation_potential' if self.oxidize else 'reduction_potential'
+        ox_name = OxidationState.OXIDIZED if self.oxidize else OxidationState.REDUCED
         if self.new_model:  # Run all molecules that are eligible for either low or high-fidelity
             self.logger.info('Re-running all molecules')
             batch_search_space = {
                 'vertical': list(self.yet_unevaluated),  # Get a snapshot, in case it changes
                 'adiabatic': [x for x in self.database.get_eligible_molecule_records(
-                    ['identifier.inchi', 'data.small_basis.neutral', 'oxidation_potential.smb-vacuum-vertical'],
+                    ['identifier.inchi', 'data.small_basis.neutral', f'{pot_name}.smb-vacuum-vertical'],
                     [self.output_property]) if x.identifier['inchi'] in self.search_space],
                 'normal': [x for x in self.database.get_eligible_molecule_records(
-                    ['identifier.inchi', 'data.small_basis.oxidized', 'oxidation_potential.smb-vacuum-no-zpe'],
-                    [self.output_property]
-                ) if x.identifier['inchi'] in self.search_space]  # Only run molecules in the pre-defined search space
+                    ['identifier.inchi', f'data.small_basis.{ox_name}', f'{pot_name}.smb-vacuum-no-zpe'],
+                    [self.output_property]) if x.identifier['inchi'] in self.search_space]
             }
         else:  # Only run molecules where a simulation finished since the last re-ordering
             self.logger.info('Only running molecules with new simulation data')
@@ -473,8 +501,10 @@ class Thinker(BaseThinker):
         ]:
             if len(batch_search_space[tag]) > 0:
                 # Unpack the XYZ and low-resolution IP
+
                 xyzs = [x.data['small_basis'][xyz_charge].xyz for x in batch_search_space[tag]]
-                low_res_vals = [x.oxidation_potential[low_res] for x in batch_search_space[tag]]
+                low_res_vals = [x.oxidation_potential[low_res] if self.oxidize else x.reduction_potential[low_res]
+                                for x in batch_search_space[tag]]
 
                 inference_chunks[tag] = np.array_split(
                     xyzs, len(batch_search_space[tag]) // self.inference_chunk_size + 1
@@ -482,9 +512,9 @@ class Thinker(BaseThinker):
                 self.inference_inputs[tag] = [
                     {'inchi': x.identifier['inchi'],
                      'xyz': xyz,
-                     'low_fidelity': x.oxidation_potential[low_res],
+                     'low_fidelity': lr,
                      'method': method}
-                    for x, xyz in zip(batch_search_space[tag], xyzs)
+                    for x, xyz, lr in zip(batch_search_space[tag], xyzs, low_res_vals)
                 ]
                 init_schnet = np.tile(
                     np.array(low_res_vals, dtype=np.float32)[:, None],
@@ -662,14 +692,14 @@ if __name__ == '__main__':
     # Molecule data / search space related
     parser.add_argument('--mongo-url', default='mongod://localhost:27017/', help='URL of the mongo server')
     parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
-    parser.add_argument('--solvent', default=None, choices=[None],
-                        help='Whether to compute solvation energy in a solvent / name of solvent')
+    parser.add_argument('--oxidize', action='store_true', help='Optimize the ionization potential')
+    parser.add_argument('--target-level', help='Level of accuracy to compute. Name of a RedoxReceipe')
 
     # Active-learning related
     parser.add_argument("--search-size", default=200000, type=int,
                         help="Number of new molecules to evaluate during this search")
     parser.add_argument('--target-range', default=(10, np.inf), type=float, nargs=2,
-                    help='Target range (min, max) for IP')
+                        help='Target range (min, max) for IP')
     parser.add_argument('--retrain-frequency', default=50, type=int,
                         help="Number of completed high-fidelity computations need to trigger model retraining")
     parser.add_argument('--reorder-frequency', default=50, type=int,
@@ -693,6 +723,9 @@ if __name__ == '__main__':
     run_params["nnodes"] = nnodes
     run_params["qc_workers"] = nnodes / args.nodes_per_task
 
+    # Get the desired computational settings
+    recipe = get_recipe_by_name(args.target_level)
+
     # Connect to MongoDB
     mongo_url = parse.urlparse(args.mongo_url)
     mongo = MoleculePropertyDB.from_connection_info(mongo_url.hostname, mongo_url.port)
@@ -704,7 +737,7 @@ if __name__ == '__main__':
     # Create an output directory with the time and run parameters
     start_time = datetime.utcnow()
     params_hash = hashlib.sha256(json.dumps(run_params).encode()).hexdigest()[:6]
-    out_dir = Path('runs').joinpath(f'ensemble-{start_time.strftime("%d%b%y-%H%M%S")}-{params_hash}')
+    out_dir = Path('runs').joinpath(f'{args.target_level}-{start_time.strftime("%d%b%y-%H%M%S")}-{params_hash}')
     out_dir.mkdir(exist_ok=False, parents=True)
 
     # Save the run parameters to disk
@@ -759,7 +792,6 @@ if __name__ == '__main__':
                                                     topics=['simulate', 'infer', 'train'],
                                                     keep_inputs=False)
 
-
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
     def _fix_arguments(func, **kwargs):
@@ -780,15 +812,9 @@ if __name__ == '__main__':
                                      reset_weights=not args.retrain_from_scratch,
                                      patience=args.train_patience, timeout=args.train_timeout)
 
-    my_compute_vertical = _fix_arguments(compute_vertical, n_nodes=args.nodes_per_task)
-    my_compute_adiabatic = _fix_arguments(compute_adiabatic, n_nodes=args.nodes_per_task)
+    my_compute_vertical = _fix_arguments(compute_vertical, spec_name=recipe.geometry_level, n_nodes=args.nodes_per_task)
+    my_compute_adiabatic = _fix_arguments(compute_adiabatic, spec_name=recipe.geometry_level, n_nodes=args.nodes_per_task)
     my_compute_single = _fix_arguments(compute_single_point, n_nodes=args.nodes_per_task)
-
-    # Get the name of the output property
-    output_prop = {
-        None: 'oxidation_potential.nob-vacuum-smb-geom',
-        'acetonitrile': 'oxidation_potential.nob-acn-smb-geom'
-    }[args.solvent]
 
     # Create the method server and task generator
     ml_cfg = {'executors': ['ml']}
@@ -815,9 +841,9 @@ if __name__ == '__main__':
                       out_dir,
                       args.beta,
                       args.random_seed,
-                      output_prop,
-                      args.target_range,
-                      args.solvent)
+                      args.oxidize,
+                      recipe,
+                      args.target_range)
     logging.info('Created the task server and task generator')
 
     try:
