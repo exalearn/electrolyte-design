@@ -5,19 +5,15 @@ that are serializable and, ideally, possible to use
 in languages besides Python
 """
 
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, Tuple
+from threading import Lock
+import logging
+
 
 from qcelemental.models import OptimizationInput, Molecule, AtomicInput, OptimizationResult, AtomicResult, DriverEnum
 from qcelemental.models.procedures import QCInputSpecification
 from qcengine import compute_procedure, compute
-
 from qcengine.config import TaskConfig
-
-
-import logging
-# TODO (wardlt): Consider breaking this into separate submodules
-from typing import Tuple
-
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -26,6 +22,8 @@ from moldesign.utils.chemistry import parse_from_molecule_string
 
 logger = logging.getLogger(__name__)
 _code = 'nwchem'  # Default software used for QC
+
+_generate_lock = Lock()
 
 
 def generate_inchi_and_xyz(mol_string: str, special_cases: bool = True) -> Tuple[str, str]:
@@ -50,30 +48,31 @@ def generate_inchi_and_xyz(mol_string: str, special_cases: bool = True) -> Tuple
         - XYZ coordinates for the molecule
     """
 
-    # Generate 3D coordinates for the molecule
-    mol = parse_from_molecule_string(mol_string)
-    mol = Chem.AddHs(mol)
-    AllChem.EmbedMolecule(mol, randomSeed=1)
-    AllChem.MMFFOptimizeMolecule(mol)
+    with _generate_lock:
+        # Generate 3D coordinates for the molecule
+        mol = parse_from_molecule_string(mol_string)
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=1)
+        AllChem.MMFFOptimizeMolecule(mol)
 
-    # Generate an InChI string with stereochemistry information
-    AllChem.AssignStereochemistryFrom3D(mol)
-    inchi = Chem.MolToInchi(mol)
+        # Generate an InChI string with stereochemistry information
+        AllChem.AssignStereochemistryFrom3D(mol)
+        inchi = Chem.MolToInchi(mol)
 
-    # Save geometry as 3D coordinates
-    xyz = f"{mol.GetNumAtoms()}\n"
-    xyz += inchi + "\n"
-    conf = mol.GetConformer()
-    for i, a in enumerate(mol.GetAtoms()):
-        s = a.GetSymbol()
-        c = conf.GetAtomPosition(i)
-        xyz += f"{s} {c[0]} {c[1]} {c[2]}\n"
+        # Save geometry as 3D coordinates
+        xyz = f"{mol.GetNumAtoms()}\n"
+        xyz += inchi + "\n"
+        conf = mol.GetConformer()
+        for i, a in enumerate(mol.GetAtoms()):
+            s = a.GetSymbol()
+            c = conf.GetAtomPosition(i)
+            xyz += f"{s} {c[0]} {c[1]} {c[2]}\n"
 
-    # Special cases for odd kinds of molecules
-    if special_cases:
-        fix_cyclopropenyl(xyz, mol_string)
+        # Special cases for odd kinds of molecules
+        if special_cases:
+            fix_cyclopropenyl(xyz, mol_string)
 
-    return inchi, xyz
+        return inchi, xyz
 
 
 def relax_structure(xyz: str,
