@@ -481,7 +481,8 @@ class RedoxEnergyRecipe(BaseModel):
     # Defining the level used to get the total energy, ZPE and solvation energy
     energy_level: AccuracyLevel = Field(..., help="Accuracy level used to compute the total energies")
     zpe_level: Optional[AccuracyLevel] = Field(None, help="Accuracy level used to compute the zero-point energy")
-    solvation_level: Optional[AccuracyLevel] = Field(None, help="Accuracy level used to compute the solvation energy")
+    solvation_level: Optional[AccuracyLevel] = Field(None, help="Accuracy level used to compute the solvation energy. "
+                                                                "Default is the same level as 'energy'")
 
     def get_required_data(self, oxidation_state: Union[str, OxidationState]) -> List[str]:
         """List of data fields required for this computation to complete
@@ -514,10 +515,11 @@ class RedoxEnergyRecipe(BaseModel):
             ])
 
         # Add in the solvation energies, if needed
-        if self.solvent is not None and self.solvation_level is not None:
+        if self.solvent is not None:
+            level = self.energy_level if self.solvation_level is None else self.solvation_level
             output.extend([
-                f'{neutral_rec}.total_energy_in_solvent.neutral.{self.solvent}.{self.energy_level}',
-                f'{charged_rec}.total_energy_in_solvent.{oxidation_state}.{self.solvent}.{self.energy_level}',
+                f'{neutral_rec}.total_energy_in_solvent.neutral.{self.solvent}.{level}',
+                f'{charged_rec}.total_energy_in_solvent.{oxidation_state}.{self.solvent}.{level}',
             ])
         return output
 
@@ -563,16 +565,15 @@ class RedoxEnergyRecipe(BaseModel):
                 neutral_geometry.zpe[OxidationState.NEUTRAL][self.energy_level]
 
         # Adjust with solvation energy, if required
-        if self.solvation_level is not None and self.solvent is not None:
-            if self.solvation_level not in \
-                    neutral_geometry.total_energy_in_solvent[OxidationState.NEUTRAL][self.solvent]:
-                raise ValueError(f'Energy not available in {self.solvent} at {self.energy_level} for neutral molecule')
-            if self.solvation_level not in ionized_geometry.total_energy_in_solvent[oxidation_state][self.solvent]:
-                raise ValueError(f'Energy not available in {self.solvent} at {self.energy_level}'
-                                 f' for {oxidation_state} molecule')
+        if self.solvent is not None:
+            level = self.energy_level if self.solvation_level is None else self.solvation_level
+            if level not in neutral_geometry.total_energy_in_solvent[OxidationState.NEUTRAL][self.solvent]:
+                raise ValueError(f'Energy not available in {self.solvent} at {level} for neutral molecule')
+            if level not in ionized_geometry.total_energy_in_solvent[oxidation_state][self.solvent]:
+                raise ValueError(f'Energy not available in {self.solvent} at {level} for {oxidation_state} molecule')
             delta_g += \
-                ionized_geometry.solvation_energy[oxidation_state][self.solvent][self.solvation_level] - \
-                neutral_geometry.solvation_energy[OxidationState.NEUTRAL][self.solvent][self.solvation_level]
+                ionized_geometry.solvation_energy[oxidation_state][self.solvent][level] - \
+                neutral_geometry.solvation_energy[OxidationState.NEUTRAL][self.solvent][level]
 
         # Compute the absolute potential using the Nerst equation
         n = get_charge(oxidation_state)
