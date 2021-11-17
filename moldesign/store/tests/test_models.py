@@ -22,6 +22,12 @@ def test_from_inchi():
     assert md.key == "VNWKTOKETHGBQD-UHFFFAOYSA-N"
 
 
+def test_get_property():
+    md = MoleculeData.from_identifier('C')
+    assert md.get_property('identifier.smiles') == 'C'
+    assert md.get_property('fake') is None
+
+
 def test_hash():
     inchi, xyz = generate_inchi_and_xyz('O')
     mol = Molecule.from_data(xyz, 'xyz')

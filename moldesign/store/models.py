@@ -1,6 +1,6 @@
 """Data models for storing molecular property data"""
 from hashlib import sha1
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple, Any
 from enum import Enum
 
 import numpy as np
@@ -292,6 +292,23 @@ class MoleculeData(BaseModel):
             return Chem.MolFromInchi(self.identifier['inchi'])
         else:
             raise ValueError('No identifiers are compatible with RDKit')
+
+    def get_property(self, path: str) -> Optional[Any]:
+        """Get the property at a certain path in the model.
+
+        Uses the "dot notation" of Mongo (ex: "reduction_potential.smb-acn")
+
+        Args:
+            path: Path to the desired data
+        Returns:
+            Requested data or ``None`` if not present
+        """
+        cur = self.dict()
+        for attr in path.split("."):
+            if attr not in cur:
+                return None
+            cur = cur[attr]
+        return cur
 
     def add_all_identifiers(self):
         """Set all possible identifiers for a molecule"""
