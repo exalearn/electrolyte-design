@@ -123,3 +123,13 @@ The simulation recorder performs a several steps whenever an XTB task completes:
 - Check if enough highest-fidelity simulations have completed to retrain a model. If so, trigger retraining 
 - Check if enough low-fidelity simulations have completed to re-run inference. If so, trigger inference
 - Write the QCEngine records of the computation to disk
+
+## Multi-Site Version
+
+We also have a multi-site version of this application, `run-multi.py`, where the steering agent requisitions separate resources
+for machine learning and quantum chemistry tasks.
+As resources are requistioned by the steering agent itself (rather than assumed to be available as in `run.py`),
+the steering process stays persistant across multiple resource allocations.
+It also does not move resources between the "simulation" and "training/inference" pools. 
+
+
