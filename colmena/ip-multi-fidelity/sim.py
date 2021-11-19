@@ -1,4 +1,5 @@
 """All of the simulation assays, simplified to have the same interface"""
+import hashlib
 from typing import Tuple, List, Optional
 from qcelemental.models import OptimizationResult, AtomicResult, DriverEnum
 
@@ -29,12 +30,22 @@ def compute_vertical(smiles: str, oxidize: bool, spec_name: str = 'small_basis',
 
     # Make the compute spec
     compute_config = {'nnodes': n_nodes, 'cores_per_rank': 2}
+    
 
     # Get the specification and make it more resilient
     spec, code = get_qcinput_specification(spec_name)
     if code == "nwchem":
+        spec.keywords['dft__convergence__energy'] = 1e-7
+        spec.keywords['dft__convergence__fast'] = True
         spec.keywords["dft__iterations"] = 150
+        spec.keywords["driver__maxiter"] = 150
         spec.keywords["geometry__noautoz"] = True
+        
+        # Make a repeatably-named scratch directory. 
+        #  We cannot base it off a hash of the input file,
+        #  because the XYZ file generator is stochastic.
+        runhash = hashlib.sha256(f'{smiles}_{oxidize}_{spec_name}'.encode()).hexdigest()[:12]
+        spec.keywords["scratch_name"] = f'nwc_{runhash}'
 
     # Compute the geometries
     neutral_xyz, _, neutral_relax = relax_structure(xyz, spec, charge=init_charge, code=code,
@@ -69,7 +80,10 @@ def compute_adiabatic(xyz: str, init_charge: int, oxidize: bool,
     # Get the specification and make it more resilient
     spec, code = get_qcinput_specification(spec_name)
     if code == "nwchem":
+        spec.keywords['dft__convergence__energy'] = 1e-7
+        spec.keywords['dft__convergence__fast'] = True
         spec.keywords["dft__iterations"] = 150
+        spec.keywords["driver__maxiter"] = 150
         spec.keywords["geometry__noautoz"] = True
 
     # Compute the geometries
@@ -105,7 +119,7 @@ def compute_single_point(xyz: str, charge: int, solvent: Optional[str] = None,
         spec.keywords["dft__iterations"] = 150
         spec.keywords["geometry__noautoz"] = True
 
-    #
+    # Run the computation
     spe_record = run_single_point(xyz, DriverEnum.energy, spec, charge=charge, code=code,
                                   compute_config=compute_config)
 
