@@ -318,6 +318,9 @@ class Thinker(BaseThinker):
                      gather_from='simulation', gather_to='training', disperse_to='inference',
                      slot_step=4)
     def train_models(self):
+        self._train_model()
+
+    def _train_model(self):
         """Train machine learning models"""
         self.logger.info('Started retraining')
 
@@ -453,6 +456,11 @@ class Thinker(BaseThinker):
                      slot_step=4)
     def launch_inference(self):
         """Submit inference tasks for the yet-unlabelled samples"""
+        self._launch_inference()
+
+    def _launch_inference(self):
+        """As a private function so that we can change the function
+        which launches it to have different allocation behavior"""
         self.logger.info('Beginning to submit inference tasks')
 
         # Pull the search space in a compact form
@@ -686,12 +694,14 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', default=32, type=int, help='Batch size for model training')
     parser.add_argument('--random-seed', default=0, type=int, help='Random seed for model (re)trainings')
     parser.add_argument('--retrain-from-scratch', action='store_true', help='Whether to retrain models from scratch')
-    parser.add_argument('--train-timeout', default=None, type=float, help='Timeout for training operation (s)')
+    parser.add_argument('--train-timeout', default=900, type=float, help='Timeout for training operation (s)')
     parser.add_argument('--train-patience', default=None, type=int, help='Patience for training operation (epochs)')
 
     # Molecule data / search space related
     parser.add_argument('--mongo-url', default='mongod://localhost:27017/', help='URL of the mongo server')
     parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
+    parser.add_argument('--max-heavy-atoms', type=int, help='Maximum molecule size')
+    parser.add_argument('--search-downselect', help='How many molecules to use from the search space', type=int)
     parser.add_argument('--oxidize', action='store_true', help='Optimize the ionization potential')
     parser.add_argument('--target-level', help='Level of accuracy to compute. Name of a RedoxReceipe')
 
@@ -732,6 +742,10 @@ if __name__ == '__main__':
 
     # Load in the search space
     full_search = pd.read_csv(args.search_space, delim_whitespace=True)
+    if args.max_heavy_atoms is not None:
+        full_search.query(f'heavy_atoms <= {args.max_heavy_atoms}', inplace=True)
+    if args.search_downselect is not None and len(full_search) > args.search_downselect:
+        full_search = full_search.sample(args.search_downselect, random_state=args.random_seed)
     search_space = full_search['inchi'].values
 
     # Create an output directory with the time and run parameters
@@ -799,7 +813,7 @@ if __name__ == '__main__':
         return update_wrapper(my_func, func)
 
 
-    my_evaluate_mpnn = _fix_arguments(evaluate_mpnn, batch_size=args.batch_size, cache=True, n_jobs=8)
+    my_evaluate_mpnn = _fix_arguments(evaluate_mpnn, batch_size=args.batch_size * 8, cache=True, n_jobs=32)
     my_update_mpnn = _fix_arguments(update_mpnn, num_epochs=args.num_epochs,
                                     learning_rate=args.learning_rate, bootstrap=True, batch_size=args.batch_size,
                                     patience=args.train_patience, timeout=args.train_timeout)
