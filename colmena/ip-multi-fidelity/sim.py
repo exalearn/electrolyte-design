@@ -45,7 +45,8 @@ def compute_vertical(smiles: str, oxidize: bool, spec_name: str = 'small_basis',
         #  We cannot base it off a hash of the input file,
         #  because the XYZ file generator is stochastic.
         runhash = hashlib.sha256(f'{smiles}_{oxidize}_{spec_name}'.encode()).hexdigest()[:12]
-        spec.keywords["scratch_name"] = f'nwc_{runhash}'
+        spec.extras["scratch_name"] = f'nwc_{runhash}'
+        spec.extras["allow_restarts"] = True
 
     # Compute the geometries
     neutral_xyz, _, neutral_relax = relax_structure(xyz, spec, charge=init_charge, code=code,
@@ -85,6 +86,11 @@ def compute_adiabatic(xyz: str, init_charge: int, oxidize: bool,
         spec.keywords["dft__iterations"] = 150
         spec.keywords["driver__maxiter"] = 150
         spec.keywords["geometry__noautoz"] = True
+        
+        # Make sure to allow restarting
+        spec.extras["allow_restarts"] = True
+        runhash = hashlib.sha256(f'{xyz}_{oxidize}_{spec_name}'.encode()).hexdigest()[:12]
+        spec.extras["scratch_name"] = f'nwc_{runhash}'
 
     # Compute the geometries
     compute_config = {'nnodes': n_nodes, 'cores_per_rank': 2}
@@ -116,8 +122,14 @@ def compute_single_point(xyz: str, charge: int, solvent: Optional[str] = None,
     compute_config = {'nnodes': n_nodes, 'cores_per_rank': 2}
     spec, code = get_qcinput_specification(spec_name, solvent)
     if code == "nwchem":
+        # Reduce the accuracy needed to 1e-7
+        spec.keywords['dft__convergence__energy'] = 1e-7
+        spec.keywords['dft__convergence__fast'] = True
         spec.keywords["dft__iterations"] = 150
         spec.keywords["geometry__noautoz"] = True
+        
+        # Make sure to allow restarting
+        spec.extras["allow_restarts"] = True
 
     # Run the computation
     spe_record = run_single_point(xyz, DriverEnum.energy, spec, charge=charge, code=code,

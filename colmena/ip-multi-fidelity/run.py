@@ -65,7 +65,7 @@ class Thinker(BaseThinker):
                  inference_chunk_size: int,
                  nodes_per_qc: int,
                  output_dir: Union[str, Path],
-                 beta: float,
+                 priority_tasks_per_method: int,
                  random_seed: int,
                  oxidize: bool,
                  target_recipe: RedoxEnergyRecipe,
@@ -88,7 +88,7 @@ class Thinker(BaseThinker):
             inference_chunk_size: Maximum number of molecules per inference task
             nodes_per_qc: Number of nodes per QC task
             output_dir: Where to write the output files
-            beta: Amount to weight uncertainty in the activation function
+            priority_tasks_per_method: Number of tasks to prioritize from each method
             random_seed: Random seed for the model (re)trainings
             target_range: Target range for the property
             oxidize: Whether to compute the oxidation instead of the reduction potential
@@ -105,9 +105,10 @@ class Thinker(BaseThinker):
         self.n_models = sum(map(len, models.values()))
         self.calibration_factor = calibration_factor.copy()
         self.output_dir = Path(output_dir)
-        self.beta = beta
+        self.priority_tasks_per_method = priority_tasks_per_method
         self.nodes_per_qc = nodes_per_qc
         self.random_seed = random_seed
+        self.rng = np.random.RandomState()
         self.target_recipe = target_recipe
         self.oxidize = oxidize
         self.oxidation_state = OxidationState.OXIDIZED if oxidize else OxidationState.REDUCED
@@ -240,6 +241,15 @@ class Thinker(BaseThinker):
         # Get basic task information
         inchi = result.task_info['inchi']
         self.logger.info(f'{result.method} computation for {inchi} finished')
+        
+        # Check if it failed due to a ManagerLost exception
+        if result.failure_info is not None and \
+            'ManagerLost: Task failure due to loss of manager' in result.failure_info.exception:
+            # If so, resubmit it
+            self.logger.info('Task failed due to manager loss. Resubmitting, as this task could still succeed')
+            self.queues.send_inputs(*result.args, input_kwargs=result.kwargs, task_info=result.task_info,
+                                    method=result.method, keep_inputs=True, topic='simulate')
+            return
 
         # Release nodes for use by other processes
         self.rec.release("simulation", self.nodes_per_qc)
@@ -505,11 +515,10 @@ class Thinker(BaseThinker):
         # Detail the inputs and result storage for the delta learning models
         for tag, xyz_charge, low_res, method in [
             ('adiabatic', OxidationState.NEUTRAL, 'smb-vacuum-vertical', 'compute_adiabatic'),
-            ('normal', OxidationState.OXIDIZED, 'smb-vacuum-no-zpe', 'compute_single_point')
+            ('normal', self.oxidation_state, 'smb-vacuum-no-zpe', 'compute_single_point')
         ]:
             if len(batch_search_space[tag]) > 0:
                 # Unpack the XYZ and low-resolution IP
-
                 xyzs = [x.data['small_basis'][xyz_charge].xyz for x in batch_search_space[tag]]
                 low_res_vals = [x.oxidation_potential[low_res] if self.oxidize else x.reduction_potential[low_res]
                                 for x in batch_search_space[tag]]
@@ -626,19 +635,23 @@ class Thinker(BaseThinker):
             self.logger.info(f'Adding {len(inputs)} new entries to priority queue')
 
         # Clear out the current queue. Prevents new simulations from starting while we pick taxes
-        while reset_queue and not self.task_queue.empty():
+        task_queue = []
+        while not self.task_queue.empty():
             try:
-                self.task_queue.get(False)
+                old_task = self.task_queue.get(False)
+                task_queue.append(old_task.item)
             except Empty:
                 continue
+        if reset_queue:
+            task_queue = []
 
         # Rank compounds according to the upper confidence bound
         dists = norm(loc=y_mean, scale=y_std)
         prob = dists.cdf(self.target_range[1]) - dists.cdf(self.target_range[0])
         sort_ids = list(np.argsort(prob))  # Sorted worst to best (ascending)
+        best_prob = np.max(prob)
 
-        # Make a temporary copy as a List, which means we can easily judge its size
-        task_queue = []
+        # Add the new tasks to the list
         while len(task_queue) < self.n_to_evaluate * 2:
             # Special case: exit if no more left to choose
             if len(sort_ids) == 0:
@@ -652,20 +665,45 @@ class Thinker(BaseThinker):
             mol_data['mean'] = float(y_mean[mol_id])  # Converts from np.float32, which is not JSON serializable
             mol_data['std'] = float(y_std[mol_id])
             mol_data['prob'] = float(prob[mol_id])
-
+            
             # Add it to list if hasn't already been ran
             #  There are cases where a computation could have been run between when inference started and now
             inchi = mol_data['inchi']
             method = mol_data['method']
+            mol_data['score'] = mol_data['prob']
+            
             if inchi in self.already_ran[method]:
                 continue
-            # Note: converting to float b/c np.float32 is not JSON serializable
+                
+            # Add the score and then add it to the queue
             task_queue.append(mol_data)
+            
+        
+        # Add a boost to the best tasks
+        if self.priority_tasks_per_method > 0:
+            self.logger.info(f'Boosting {self.priority_tasks_per_method} tasks per method to front of queue')
+            best_prob = max(x['prob'] for x in task_queue)
+            num_boosted = defaultdict(int)
+            for mol_data in task_queue:
+                # Add a score boost to the top tasks from each method
+                method = mol_data['method']
+                if num_boosted[method] < self.priority_tasks_per_method:
+                    num_boosted[method] += 1
+                    score = best_prob + self.rng.rand()
+                    self.logger.info(f'Boosted {method} for {mol_data["inchi"]}')
+                    mol_data['score'] = score
+                    
+            # Sort results
+            task_queue = sorted(task_queue, key=lambda x: -x['score'])
+            
+        # Save the task list
+        queue_df = pd.DataFrame(task_queue)
+        queue_df.to_csv(self.output_dir / 'task_queue.csv', index=False)
 
         # Put new tasks in the queue
         self.logger.info(f'Pushing {len(task_queue)} jobs to the task queue')
         for task_info in task_queue:
-            entry = _PriorityEntry(score=-task_info['prob'], item=task_info)
+            entry = _PriorityEntry(score=-task_info['score'], item=task_info)
             self.task_queue.put(entry)  # Negative so largest UCB is first
         self.logger.info(f'Updated task list. Current size: {self.task_queue.qsize()}')
 
@@ -717,8 +755,9 @@ if __name__ == '__main__':
                              "need to trigger reordering the task list using new data")
     parser.add_argument("--molecules-per-ml-task", default=8192, type=int,
                         help="Number molecules per inference task")
-    parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. "
-                                                  "This is the beta from the UCB acquisition function", type=float)
+    parser.add_argument("--priority-tasks-per-method", default=0, type=int,
+                        help="Number of tasks from each method to prioritize executing. "
+                             "Ensures that at least a few tasks from each method are run early in a search.")
 
     # Execution system related
     parser.add_argument('--nodes-per-task', default=4, type=int,
@@ -853,7 +892,7 @@ if __name__ == '__main__':
                       args.molecules_per_ml_task,
                       args.nodes_per_task,
                       out_dir,
-                      args.beta,
+                      args.priority_tasks_per_method,
                       args.random_seed,
                       args.oxidize,
                       recipe,

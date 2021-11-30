@@ -22,7 +22,31 @@ Message-passing neural networks (MPNNs) predict molecular properties from the gr
 We use MPNNs for predicting the IP for molecules before any simulations are run.
 Continuous-convolution neural networks (i.e., SchNet) predict properties from the 3D geometry of a molecule, 
 and are written using [SchNetPack](https://schnetpack.readthedocs.io/en/stable/) and PyTorch.
-We use SchNet for predicting a correction factor between the IP computed with lower levels of theory and the target elvel.
+We use SchNet for predicting a correction factor between the IP computed with lower levels of theory and the target level.
+
+## Steering Algorithm
+
+We use a form of the [Probability of Improvement](https://modal-python.readthedocs.io/en/latest/content/query_strategies/Acquisition-functions.html#probability-of-improvement)
+strategy from Bayesian Optimization adapted for multi-fidelity searches.
+
+The first adaptation is that we use means and uncertainty from more than one model when selecting tasks,
+one for each level of fidelity.
+Each point in the search space is scored using a model which takes data from the highest level of fidelity yet performed.
+In our case, molecules that have yet to be evaluated at all are evaluated with the MPNNs
+and those which we have performed a vertical redox potential computation are evaluated with a SchNet model.
+The predicted mean and uncertainty in the redox potential of each molecule are combined together into a single list, 
+regardless of which model was used, and the molecules ranked according to the probability of improvement.
+We then run the next higher fidelity for the selected molecules (e.g., we run an adiabatic computation if a vertical redox potential was performed last).
+
+The second adaptation is the introduction of "priority tasks" for each method.
+These priority tasks ensure that computations at higher fidelity methods are performed early in a search process,
+which ensures adaquate training data at higher fidelities is acquired.
+The need for prioritization is not required for single-fidelity Bayesian optimization because every function
+evaluation produces data that can be used to retrain the model.
+Our strategy only uses the highest-fidelity data and, so, we must provide some mechanism to ensure these 
+high-fidelity computations are performed in a timely manner.
+We accomplish this by placing a user-defined number of tasks from each method at the beginning of the queue in a random order.
+
 
 ## Running the Code
 

@@ -45,6 +45,8 @@ python run-multi.py --redisport $port --mongo-url mongo://thetalogin6:27845/ \
     --target-level dfb-vacuum-smb-geom \
     --target-range -1000 1 \
     --molecules-per-ml-task 4096 \
+    --train-timeout 900 \
+    --num-qc-nodes 164 \
     $@
 
 # Kill the servers

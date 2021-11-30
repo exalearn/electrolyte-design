@@ -61,7 +61,7 @@ class MultiThinker(Thinker):
                  inference_chunk_size: int,
                  nodes_per_qc: int,
                  output_dir: Union[str, Path],
-                 beta: float,
+                 priority_tasks_per_method: int,
                  random_seed: int,
                  oxidize: bool,
                  target_recipe: RedoxEnergyRecipe,
@@ -85,7 +85,7 @@ class MultiThinker(Thinker):
             inference_chunk_size: Maximum number of molecules per inference task
             nodes_per_qc: Number of nodes per QC task
             output_dir: Where to write the output files
-            beta: Amount to weight uncertainty in the activation function
+            priority_tasks_per_method: Number of tasks from each method to prioritize after resetting queue
             random_seed: Random seed for the model (re)trainings
             target_range: Target range for the property
             oxidize: Whether to compute the oxidation instead of the reduction potential
@@ -106,7 +106,7 @@ class MultiThinker(Thinker):
             inference_chunk_size=inference_chunk_size,
             nodes_per_qc=nodes_per_qc,
             output_dir=output_dir,
-            beta=beta,
+            priority_tasks_per_method=priority_tasks_per_method,
             random_seed=random_seed,
             oxidize=oxidize,
             target_recipe=target_recipe,
@@ -177,9 +177,10 @@ if __name__ == '__main__':
                              "need to trigger reordering the task list using new data")
     parser.add_argument("--molecules-per-ml-task", default=8192, type=int,
                         help="Number molecules per inference task")
-    parser.add_argument("--beta", default=1, help="Degree of exploration for active learning. "
-                                                  "This is the beta from the UCB acquisition function", type=float)
-
+    parser.add_argument("--priority-tasks-per-method", default=0, type=int,
+                            help="Number of tasks from each method to prioritize executing. "
+                                 "Ensures that at least a few tasks from each method are run early in a search.")
+    
     # Execution system related
     parser.add_argument('--nodes-per-task', default=4, type=int,
                         help='Number of nodes per quantum chemistry task')
@@ -318,7 +319,7 @@ if __name__ == '__main__':
                            args.molecules_per_ml_task,
                            args.nodes_per_task,
                            out_dir,
-                           args.beta,
+                           args.priority_tasks_per_method,
                            args.random_seed,
                            args.oxidize,
                            recipe,

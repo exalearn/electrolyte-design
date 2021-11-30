@@ -89,12 +89,13 @@ def theta_persistent(log_dir: str,
                 prefetch_capacity=ml_prefetch,
                 provider=CobaltProvider(
                     account='CSC249ADCD08',
-                    queue='debug-cache-quad',
+                    queue='debug-cache-quad' if qc_nodes <=8 else None,
                     walltime='00:60:00',
                     nodes_per_block=qc_nodes,
                     init_blocks=0,
                     max_blocks=1,
-                    launcher=SingleNodeLauncher(),
+                    launcher=SimpleLauncher(),
+                    cmd_timeout=360,
                     worker_init='''
 module load miniconda-3
 conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
@@ -102,6 +103,7 @@ conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
 
 export OMP_NUM_THREADS=64
 export KMP_INIT_AT_FORK=FALSE
+export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 export PATH="/lus/theta-fs0/projects/CSC249ADCD08/software/nwchem-6.8.1/bin/LINUX64:$PATH"
 mkdir -p scratch  # For the NWChem tasks
@@ -134,6 +136,7 @@ export LD_LIBRARY_PATH=/opt/intel/mkl/lib/intel64_lin/:/opt/intel/compilers_and_
                     walltime='00:60:00',
                     init_blocks=0,
                     max_blocks=1,
+                    cmd_timeout=360,
                     launcher=AprunLauncher(overrides='-d 256 --cc depth -j 4'),  # Places worker on the compute node
                     worker_init='''
 module load miniconda-3
