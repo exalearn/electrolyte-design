@@ -8,7 +8,8 @@ from moldesign.simulate.specs import get_qcinput_specification
 from moldesign.utils.chemistry import get_baseline_charge
 
 
-def compute_vertical(smiles: str, oxidize: bool, spec_name: str = 'small_basis', n_nodes: int = 2) \
+def compute_vertical(smiles: str, oxidize: bool, solvent: Optional[str] = None,
+                     spec_name: str = 'small_basis', n_nodes: int = 2) \
         -> Tuple[List[OptimizationResult], List[AtomicResult]]:
     """Perform the initial ionization potential computation of the vertical
 
@@ -17,6 +18,7 @@ def compute_vertical(smiles: str, oxidize: bool, spec_name: str = 'small_basis',
     Args:
         smiles: SMILES string to evaluate
         oxidize: Whether to perform an oxidation or reduction
+        solvent: Name of the solvent, if desired. Runs on the neutral geometry after relaxation
         spec_name: Quantum chemistry specification for the molecule
         n_nodes: Number of nodes per computation
     Returns:
@@ -56,7 +58,25 @@ def compute_vertical(smiles: str, oxidize: bool, spec_name: str = 'small_basis',
     new_charge = init_charge + 1 if oxidize else init_charge - 1
     oxid_spe = run_single_point(neutral_xyz, DriverEnum.energy, spec, charge=new_charge, code=code,
                                 compute_config=compute_config)
-    return [neutral_relax], [oxid_spe]
+    
+    # If desired, submit a solvent computation as well
+    if solvent is None:
+        return [neutral_relax], [oxid_spe]
+    
+    spec, code = get_qcinput_specification(spec_name, solvent)
+    if code == "nwchem":
+        # Reduce the accuracy needed to 1e-7
+        spec.keywords['dft__convergence__energy'] = 1e-7
+        spec.keywords['dft__convergence__fast'] = True
+        spec.keywords["dft__iterations"] = 150
+        spec.keywords["geometry__noautoz"] = True
+        
+        # Make sure to allow restarting
+        spec.extras["allow_restarts"] = True
+    solv_spe = run_single_point(neutral_xyz, DriverEnum.energy, spec, charge=init_charge, code=code,
+                                compute_config=compute_config)
+    return [neutral_relax], [oxid_spe, solv_spe]
+
 
 
 def compute_adiabatic(xyz: str, init_charge: int, oxidize: bool, 
@@ -120,6 +140,8 @@ def compute_single_point(xyz: str, charge: int, solvent: Optional[str] = None,
 
     # Get the specification and make it more resilient
     compute_config = {'nnodes': n_nodes, 'cores_per_rank': 2}
+    if spec_name == 'diffuse_basis':
+        compute_config['cores_per_rank'] = 8
     spec, code = get_qcinput_specification(spec_name, solvent)
     if code == "nwchem":
         # Reduce the accuracy needed to 1e-7
@@ -130,7 +152,9 @@ def compute_single_point(xyz: str, charge: int, solvent: Optional[str] = None,
         
         # Make sure to allow restarting
         spec.extras["allow_restarts"] = True
-
+        runhash = hashlib.sha256(f'{xyz}_{charge}_{spec_name}_{solvent}'.encode()).hexdigest()[:12]
+        spec.extras["scratch_name"] = f'nwc_{runhash}'
+        
     # Run the computation
     spe_record = run_single_point(xyz, DriverEnum.energy, spec, charge=charge, code=code,
                                   compute_config=compute_config)
@@ -139,7 +163,7 @@ def compute_single_point(xyz: str, charge: int, solvent: Optional[str] = None,
 
 
 if __name__ == "__main__":
-    [neu_relax], [oxi_vert] = compute_vertical('C', True, n_nodes=1)
+    [neu_relax], [oxi_vert, neu_solv] = compute_vertical('C', True, n_nodes=1, solvent='water')
     print(neu_relax.energies[-1] - oxi_vert.return_result)
     [oxi_relax], _ = compute_adiabatic(neu_relax.final_molecule.to_string('xyz'), 0, True,  n_nodes=1)
     print(neu_relax.energies[-1] - oxi_relax.energies[-1])
