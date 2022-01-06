@@ -1,0 +1,5 @@
+allowed_elements: [C, H, O, N, F, S]
+bad_smarts:
+  # Acids
+  - "[CX3](=O)[OX1H0-,OX2H1]"
+  - "[CX3](=O)[OX2H1]"
