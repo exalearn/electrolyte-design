@@ -23,6 +23,6 @@ Call `python run.py --help` for full details.
 
 ## Configuring the Endpoint
 
-
+**TODO**: Write about how to set up FuncX
 
 **TODO**: Add in details about configuring ProxyStore

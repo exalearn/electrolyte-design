@@ -121,6 +121,7 @@ class Thinker(BaseThinker):
         # Inter-thread communication stuff
         self.start_inference = Event()  # Mark that inference should start
         self.start_training = Event()  # Mark that retraining should start
+        self.task_queue_ready = Event()  # Mark that the task queue is ready
         self.update_in_progress = Event()  # Mark that we are currently re-training the model
         self.task_queue = []  # Holds a list of tasks to be simulated
         self.task_queue_lock = Lock()  # Ensures only one thread edits task queue at a time
@@ -128,9 +129,14 @@ class Thinker(BaseThinker):
 
         # Start with inference!
         self.start_inference.set()
+        self.rec.reallocate(None, 'simulation', 'all')
 
     @task_submitter(task_type='simulation')
     def submit_qc(self):
+
+        # Wait for the first set of tasks to be available
+        self.task_queue_ready.wait()
+
         # Submit the next task
         with self.task_queue_lock:
             inchi, info = self.task_queue.pop(0)
@@ -253,15 +259,15 @@ class Thinker(BaseThinker):
         # Submit the chunks to the workflow engine
         for mid, model in enumerate(self.mpnns):
             # Save the current model to disk
-            model_path = model_folder.joinpath(f'model-{mid}-{self.inference_batch}.h5')
-            model.save(model_path)
+            model_path = model_folder.joinpath(f'model-{mid}.h5').absolute()
+            model.save(str(model_path))
 
             # Make a model message
             model_msg = MPNNMessage(model)
 
             # Read the model in
             for cid, chunk in enumerate(self.inference_chunks):
-                self.queues.send_inputs(model_msg, chunk['smiles'].tolist(),
+                self.queues.send_inputs([model_msg], chunk['smiles'].tolist(),
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
                                         task_info={'chunk_id': cid, 'chunk_size': len(chunk), 'model_id': mid})
@@ -285,6 +291,10 @@ class Thinker(BaseThinker):
             with open(self.output_dir.joinpath('inference-records.json'), 'a') as fp:
                 print(result.json(exclude={'value'}), file=fp)
 
+            # Raise an error if this task failed
+            if not result.success:
+                raise ValueError(f'Inference failed: {result.failure_info.exception}. Check the logs for further details')
+
             # Store the outputs
             chunk_id = result.task_info.get('chunk_id')
             model_id = result.task_info.get('model_id')
@@ -294,14 +304,12 @@ class Thinker(BaseThinker):
         y_pred = np.concatenate(y_pred, axis=0)
         self._select_molecules(y_pred)
 
-        # Free up resources
-        self.rec.release('inference', self.rec.allocated_slots('inference'))
-
         # Mark that inference is complete
         self.inference_batch += 1
 
         # Mark that the task list has been updated
         self.update_in_progress.clear()
+        self.task_queue_ready.set()
 
     def _select_molecules(self, y_pred):
         """Select a list of molecules given the predictions from each model
@@ -322,18 +330,19 @@ class Thinker(BaseThinker):
         best_list = list(zip(molecules[sort_ids].tolist(),
                              y_mean[sort_ids], y_std[sort_ids], ucb[sort_ids]))
 
-        # Get a list of the molecules
+        # Push the list to the task queue
         with self.task_queue_lock:
             self.task_queue = []
-            while len(self.task_queue) < self.n_to_evaluate:
-                # Pick a molecule
-                mol, mean, std, ucb = best_list.pop()
-
+            for mol, mean, std, ucb in best_list:
                 # Add it to list if not in database or not already in queue
                 if mol not in self.already_searched and mol not in self.task_queue:
                     # Note: converting to float b/c np.float32 is not JSON serializable
                     self.task_queue.append((mol, {'mean': float(mean), 'std': float(std), 'ucb': float(ucb),
                                                   'batch': self.inference_batch}))
+
+                # If we reach the target number of molecules, stop adding more
+                if len(self.task_queue) >= self.n_to_evaluate:
+                    break
         self.logger.info('Updated task list')
 
 
@@ -420,7 +429,7 @@ if __name__ == '__main__':
     my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
-    my_run_simulation = partial(run_simulation, nodes=args.nodes_per_task, spec=args.qc_specification)
+    my_run_simulation = partial(run_simulation, n_nodes=args.nodes_per_task, spec=args.qc_specification)
     my_run_simulation = update_wrapper(my_run_simulation, run_simulation)
 
     # Create the task servers
