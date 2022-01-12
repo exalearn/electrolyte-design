@@ -1,5 +1,5 @@
 from threading import Event, Lock
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 from functools import partial, update_wrapper
 from pathlib import Path
 from datetime import datetime
@@ -13,6 +13,7 @@ import os
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import proxystore as ps
 from rdkit import Chem
 from funcx import FuncXClient
 from colmena.task_server.funcx import FuncXTaskServer
@@ -74,7 +75,8 @@ class Thinker(BaseThinker):
                  num_qc_workers: int,
                  qc_specification: str,
                  output_dir: str,
-                 beta: float):
+                 beta: float,
+                 ps_names: Dict[str, str]):
         """
         Args:
             queues: Queues used to communicate with the method server
@@ -84,6 +86,7 @@ class Thinker(BaseThinker):
             retrain_from_initial: Whether to update the model or retrain it from initial weights
             mpnns: List of MPNNs to use for selecting samples
             output_dir:
+            ps_names: mapping of topic to proxystore backend to use (or None if not using ProxyStore)
         """
         super().__init__(queues, ResourceCounter(num_qc_workers, ['simulation']), daemon=True)
 
@@ -95,6 +98,7 @@ class Thinker(BaseThinker):
         self.mpnns = mpnns.copy()
         self.output_dir = Path(output_dir)
         self.beta = beta
+        self.ps_names = ps_names
 
         # Get the name of the property given the specification
         if qc_specification == 'xtb':
@@ -198,6 +202,13 @@ class Thinker(BaseThinker):
         # Set that a retraining event is in progress
         self.update_in_progress.set()
 
+        # Batch add models to ProxyStore (batching is really only helpful with Globus)
+        if self.ps_names['train'] is not None:
+            models = [MPNNMessage(model) for _, model in self.mpnns]
+            keys = [f'model-{mid}' for mid, _ in self.mpnns]
+            proxies = ps.store.get_store(self.ps_names['train']).proxy_batch(models, keys=keys, strict=True)
+            mpnn_proxies = {mid: proxy for (mid, _), proxy in zip(self.mpnns, proxies)}
+        
         for mid, model in enumerate(self.mpnns):
             # Wait until we have nodes
             self.rec.acquire('training', 1)
@@ -216,7 +227,10 @@ class Thinker(BaseThinker):
                                         keep_inputs=False,
                                         input_kwargs={'random_state': mid})
             else:
-                model_msg = MPNNMessage(model)
+                if self.ps_names['train'] is None:
+                    model_msg = MPNNMessage(model)
+                else:
+                    model_msg = mpnn_proxies[mid]
                 self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
                                         task_info={'model_id': mid, 'molecules': list(train_data.keys())},
                                         keep_inputs=False,
@@ -256,14 +270,24 @@ class Thinker(BaseThinker):
         model_folder = self.output_dir.joinpath('models')
         model_folder.mkdir(exist_ok=True)
 
+        # Batch add models to ProxyStore (batching is really only helpful with Globus)
+        if self.ps_names['infer'] is not None:
+            models = [MPNNMessage(model) for _, model in self.mpnns]
+            keys = [f'model-{mid}' for mid, _ in self.mpnns]
+            proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(models, keys=keys, strict=True)
+            mpnn_proxies = {mid: proxy for (mid, _), proxy in zip(self.mpnns, proxies)}
+            
         # Submit the chunks to the workflow engine
         for mid, model in enumerate(self.mpnns):
-            # Save the current model to disk
-            model_path = model_folder.joinpath(f'model-{mid}.h5').absolute()
-            model.save(str(model_path))
+            if self.ps_names['infer'] is not None:
+                # Save the current model to disk
+                model_path = model_folder.joinpath(f'model-{mid}.h5').absolute()
+                model.save(str(model_path))
 
-            # Make a model message
-            model_msg = MPNNMessage(model)
+                # Make a model message
+                model_msg = MPNNMessage(model)
+            else:
+                model_msg = mpnn_proxies[mid]
 
             # Read the model in
             for cid, chunk in enumerate(self.inference_chunks):
@@ -380,6 +404,15 @@ if __name__ == '__main__':
     group.add_argument("--learning-rate", default=1e-3, help="Learning rate for re-training the models", type=float)
     group.add_argument('--num-epochs', default=512, type=int, help='Maximum number of epochs for the model training')
 
+    # Parameters related to ProxyStore
+    group = parser.add_argument_group(title='ProxyStore', description='Settings related to ProxyStore')
+    group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "simulate" topic')
+    group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "infer" topic')
+    group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "train" topic')
+    group.add_argument('--ps-threshold', default=100000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
+    group.add_argument('--ps-file-dir', default=None, help='Filesystem directory to use with the ProxyStore file backend')
+    group.add_argument('--ps-globus-config', default=None, help='Globus Endpoint config file to use with the ProxyStore Globus backend')
+
     # Parse the arguments
     args = parser.parse_args()
     run_params = args.__dict__
@@ -414,9 +447,30 @@ if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
 
+    # Init ProxyStore backends
+    ps_backends = set(args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend)
+    if 'redis' in ps_backends:
+        ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport)
+    if 'file' in ps_backends:
+        if args.ps_file_dir is None:
+            raise ValueError('Must specify --ps-file-dir to use the filesystem ProxyStore backend')
+        ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=args.ps_file_dir)
+    if 'globus' in ps_backends:
+        if args.ps_globus_config is None:
+            raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
+        endpoints = ps.store.globus.GlobusEndpoints.from_json(args.ps_globus_config)
+        ps.store.init_store(ps.store.STORES.GLOBUS, name='globus', endpoints=endpoints)
+    ps_names = {'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
+
+
     # Connect to the redis server
-    client_queues, server_queues = make_queue_pairs(args.redishost, port=args.redisport, topics=['simulate', 'infer', 'train'],
-                                                    serialization_method='pickle', keep_inputs=True)
+    client_queues, server_queues = make_queue_pairs(args.redishost,
+                                                    port=args.redisport,
+                                                    topics=['simulate', 'infer', 'train'],
+                                                    serialization_method='pickle',
+                                                    keep_inputs=True,
+                                                    proxystore_name=ps_names,
+                                                    proxystore_threshold=args.ps_threshold)
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
@@ -450,7 +504,8 @@ if __name__ == '__main__':
                       args.num_qc_workers,
                       args.qc_specification,
                       out_dir,
-                      args.beta)
+                      args.beta,
+                      ps_names)
     logging.info('Created the method server and task generator')
 
     try:
@@ -470,3 +525,9 @@ if __name__ == '__main__':
 
     # Wait for the method server to complete
     doer.join()
+
+    # Cleanup ProxyStore backends (i.e., delete objects on the filesystem
+    # for file/globus backends)
+    for ps_backend in ps_backends:
+        if ps_backend is not None:
+            ps.store.get_store(ps_backend).cleanup()

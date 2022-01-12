@@ -1,0 +1,12 @@
+{
+    "alcf#dtn_theta": {
+        "host_regex": "theta(.*?)",
+        "endpoint_path": "/projects/CSC249ADCD08/jgpaul/scratch/proxystore_globus_dump",
+        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/jgpaul/scratch/proxystore_globus_dump"
+    },
+    "endpoint2" : {
+        "host_regex": "host2(.*?)",
+        "endpoint_path": "/globus/path/to/proxystore_dump",
+        "local_path": "/local/path/to/proxystore_dump"
+    }
+}
