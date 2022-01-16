@@ -88,7 +88,7 @@ class Thinker(BaseThinker):
             output_dir:
             ps_names: mapping of topic to proxystore backend to use (or None if not using ProxyStore)
         """
-        super().__init__(queues, ResourceCounter(num_qc_workers, ['simulation']), daemon=True)
+        super().__init__(queues, ResourceCounter(num_qc_workers, ['training', 'simulation']), daemon=True)
 
         # Configuration for the run
         self.inference_chunk_size = inference_chunk_size
@@ -155,7 +155,7 @@ class Thinker(BaseThinker):
     @result_processor(topic='simulate')
     def process_outputs(self, result: Result):
         # Get basic task information
-        smiles = result.args
+        smiles, = result.args
 
         # Release nodes for use by other processes
         self.rec.release("simulation", 1)
@@ -204,10 +204,10 @@ class Thinker(BaseThinker):
 
         # Batch add models to ProxyStore (batching is really only helpful with Globus)
         if self.ps_names['train'] is not None:
-            models = [MPNNMessage(model) for _, model in self.mpnns]
-            keys = [f'model-{mid}' for mid, _ in self.mpnns]
+            models = [MPNNMessage(model) for model in self.mpnns]
+            keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
             proxies = ps.store.get_store(self.ps_names['train']).proxy_batch(models, keys=keys, strict=True)
-            mpnn_proxies = {mid: proxy for (mid, _), proxy in zip(self.mpnns, proxies)}
+            mpnn_proxies = {mid: proxy for mid, proxy in enumerate(proxies)}
         
         for mid, model in enumerate(self.mpnns):
             # Wait until we have nodes
@@ -272,14 +272,14 @@ class Thinker(BaseThinker):
 
         # Batch add models to ProxyStore (batching is really only helpful with Globus)
         if self.ps_names['infer'] is not None:
-            models = [MPNNMessage(model) for _, model in self.mpnns]
-            keys = [f'model-{mid}' for mid, _ in self.mpnns]
+            models = [MPNNMessage(model) for model in self.mpnns]
+            keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
             proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(models, keys=keys, strict=True)
-            mpnn_proxies = {mid: proxy for (mid, _), proxy in zip(self.mpnns, proxies)}
+            mpnn_proxies = {mid: proxy for mid, proxy in enumerate(proxies)}
             
         # Submit the chunks to the workflow engine
         for mid, model in enumerate(self.mpnns):
-            if self.ps_names['infer'] is not None:
+            if self.ps_names['infer'] is None:
                 # Save the current model to disk
                 model_path = model_folder.joinpath(f'model-{mid}.h5').absolute()
                 model.save(str(model_path))
@@ -409,7 +409,7 @@ if __name__ == '__main__':
     group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "simulate" topic')
     group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "infer" topic')
     group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "train" topic')
-    group.add_argument('--ps-threshold', default=100000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
+    group.add_argument('--ps-threshold', default=500000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
     group.add_argument('--ps-file-dir', default=None, help='Filesystem directory to use with the ProxyStore file backend')
     group.add_argument('--ps-globus-config', default=None, help='Globus Endpoint config file to use with the ProxyStore Globus backend')
 
@@ -448,7 +448,7 @@ if __name__ == '__main__':
                         level=logging.INFO, handlers=handlers)
 
     # Init ProxyStore backends
-    ps_backends = set(args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend)
+    ps_backends = set([args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend])
     if 'redis' in ps_backends:
         ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport)
     if 'file' in ps_backends:
