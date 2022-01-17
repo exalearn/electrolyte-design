@@ -88,7 +88,7 @@ class Thinker(BaseThinker):
             output_dir:
             ps_names: mapping of topic to proxystore backend to use (or None if not using ProxyStore)
         """
-        super().__init__(queues, ResourceCounter(num_qc_workers, ['training', 'simulation']), daemon=True)
+        super().__init__(queues, ResourceCounter(num_qc_workers, ['simulation']), daemon=True)
 
         # Configuration for the run
         self.inference_chunk_size = inference_chunk_size
@@ -129,6 +129,7 @@ class Thinker(BaseThinker):
         self.update_in_progress = Event()  # Mark that we are currently re-training the model
         self.task_queue = []  # Holds a list of tasks to be simulated
         self.task_queue_lock = Lock()  # Ensures only one thread edits task queue at a time
+        self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
 
         # Start with inference!
@@ -166,8 +167,13 @@ class Thinker(BaseThinker):
             self.n_evaluated += 1
 
             # Determine whether to start re-training
-            if not self.update_in_progress.is_set() and self.n_evaluated % self.n_complete_before_retrain == 0:
-                self.start_training.set()
+            if self.n_evaluated % self.n_complete_before_retrain == 0:
+                if self.update_in_progress.is_set():
+                    self.logger.info(f'Waiting until previous training run completes.')
+                else:
+                    self.logger.info(f'Starting retraining.')
+                    self.start_training.set()
+            self.logger.info(f'{self.n_complete_before_retrain - self.n_evaluated % self.n_complete_before_retrain} results needed until we re-train again')
 
             # Store the data in a molecule data object
             data = MoleculeData.from_identifier(smiles=smiles)
@@ -201,18 +207,17 @@ class Thinker(BaseThinker):
 
         # Set that a retraining event is in progress
         self.update_in_progress.set()
+        self.num_training_complete = 0
 
-        # Batch add models to ProxyStore (batching is really only helpful with Globus)
+        # Save the models as pickle-able messages
+        model_msgs = [MPNNMessage(model) for model in self.mpnns]
+
+        # If desired store them as proxies in a large batch
         if self.ps_names['train'] is not None:
-            models = [MPNNMessage(model) for model in self.mpnns]
             keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
-            proxies = ps.store.get_store(self.ps_names['train']).proxy_batch(models, keys=keys, strict=True)
-            mpnn_proxies = {mid: proxy for mid, proxy in enumerate(proxies)}
+            model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(model_msgs, keys=keys, strict=True)
         
-        for mid, model in enumerate(self.mpnns):
-            # Wait until we have nodes
-            self.rec.acquire('training', 1)
-
+        for mid, (model, model_msg) in enumerate(zip(self.mpnns, model_msgs)):
             # Make the database
             train_data = dict(
                 (d.identifier['smiles'], d.oxidation_potential[self.property_name])
@@ -227,10 +232,6 @@ class Thinker(BaseThinker):
                                         keep_inputs=False,
                                         input_kwargs={'random_state': mid})
             else:
-                if self.ps_names['train'] is None:
-                    model_msg = MPNNMessage(model)
-                else:
-                    model_msg = mpnn_proxies[mid]
                 self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
                                         task_info={'model_id': mid, 'molecules': list(train_data.keys())},
                                         keep_inputs=False,
@@ -240,7 +241,6 @@ class Thinker(BaseThinker):
     @result_processor(topic='train')
     def update_weights(self, result: Result):
         """Process the results of the saved model"""
-        self.rec.release('training', 1)
 
         # Save results to disk
         with open(self.output_dir.joinpath('training-results.json'), 'a') as fp:
@@ -250,16 +250,23 @@ class Thinker(BaseThinker):
         model_id = result.task_info['model_id']
         if not result.success:
             self.logger.warning(f'Training failed for {model_id}')
-            return
+        else:
+            # Update weights
+            weights, history = result.value
+            self.mpnns[model_id].set_weights(weights)
 
-        # Update weights
-        weights, history = result.value
-        self.mpnns[model_id].set_weights(weights)
+            # Print out some status info
+            self.logger.info(f'Model {model_id} finished training.')
+            with open(self.output_dir.joinpath('training-history.json'), 'a') as fp:
+                print(repr(history), file=fp)
 
-        # Print out some status info
-        self.logger.info(f'Model {model_id} finished training.')
-        with open(self.output_dir.joinpath('training-history.json'), 'a') as fp:
-            print(repr(history), file=fp)
+        # Mark that a model has finished training and trigger inference if all done
+        self.num_training_complete += 1
+        if self.num_training_complete == len(self.mpnns):
+            self.logger.info('All models complete. Triggering inference')
+            self.start_inference.set()
+        else:
+            self.logger.info(f'{len(self.mpnns) - self.num_training_complete} left to go')
 
     @event_responder(event_name='start_inference')
     def launch_inference(self):
@@ -270,26 +277,16 @@ class Thinker(BaseThinker):
         model_folder = self.output_dir.joinpath('models')
         model_folder.mkdir(exist_ok=True)
 
+        # Convert the model messages to disk
+        model_msgs = [MPNNMessage(model) for model in self.mpnns]
+
         # Batch add models to ProxyStore (batching is really only helpful with Globus)
         if self.ps_names['infer'] is not None:
-            models = [MPNNMessage(model) for model in self.mpnns]
             keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
-            proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(models, keys=keys, strict=True)
-            mpnn_proxies = {mid: proxy for mid, proxy in enumerate(proxies)}
+            model_msgs = ps.store.get_store(self.ps_names['infer']).proxy_batch(model_msgs, keys=keys, strict=True)
             
         # Submit the chunks to the workflow engine
-        for mid, model in enumerate(self.mpnns):
-            if self.ps_names['infer'] is None:
-                # Save the current model to disk
-                model_path = model_folder.joinpath(f'model-{mid}.h5').absolute()
-                model.save(str(model_path))
-
-                # Make a model message
-                model_msg = MPNNMessage(model)
-            else:
-                model_msg = mpnn_proxies[mid]
-
-            # Read the model in
+        for mid, model_msg in enumerate(model_msgs):
             for cid, chunk in enumerate(self.inference_chunks):
                 self.queues.send_inputs([model_msg], chunk['smiles'].tolist(),
                                         topic='infer', method='evaluate_mpnn',
@@ -448,7 +445,7 @@ if __name__ == '__main__':
                         level=logging.INFO, handlers=handlers)
 
     # Init ProxyStore backends
-    ps_backends = set([args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend])
+    ps_backends = {args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend}
     if 'redis' in ps_backends:
         ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport)
     if 'file' in ps_backends:
@@ -461,7 +458,6 @@ if __name__ == '__main__':
         endpoints = ps.store.globus.GlobusEndpoints.from_json(args.ps_globus_config)
         ps.store.init_store(ps.store.STORES.GLOBUS, name='globus', endpoints=endpoints)
     ps_names = {'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
-
 
     # Connect to the redis server
     client_queues, server_queues = make_queue_pairs(args.redishost,

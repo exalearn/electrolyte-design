@@ -14,4 +14,7 @@ python run.py --ml-endpoint cc63787b-7425-4eee-8b39-d34a23a9d2e6 \
        --mpnn-model-files $mpnn_files \
        --training-set $model_dir/records.json \
        --search-space $model_dir/../QM9-search.tsv \
+       --infer-ps-backend redis \
+       --train-ps-backend redis \
+       --simulate-ps-backend redis \
        $@
