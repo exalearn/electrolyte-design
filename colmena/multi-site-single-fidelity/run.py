@@ -25,6 +25,7 @@ from qcelemental.models import OptimizationResult, AtomicResult
 
 from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, MPNNMessage, custom_objects
 from moldesign.store.models import MoleculeData
+from moldesign.store.recipes import apply_recipes
 from moldesign.utils import get_platform_info
 
 
@@ -76,6 +77,7 @@ class Thinker(BaseThinker):
                  qc_specification: str,
                  output_dir: str,
                  beta: float,
+                 pause_during_update: bool,
                  ps_names: Dict[str, str]):
         """
         Args:
@@ -86,6 +88,7 @@ class Thinker(BaseThinker):
             retrain_from_initial: Whether to update the model or retrain it from initial weights
             mpnns: List of MPNNs to use for selecting samples
             output_dir:
+            pause_during_update: Whether to stop submitting tasks while task list is updating
             ps_names: mapping of topic to proxystore backend to use (or None if not using ProxyStore)
         """
         super().__init__(queues, ResourceCounter(num_qc_workers, ['simulation']), daemon=True)
@@ -99,6 +102,7 @@ class Thinker(BaseThinker):
         self.output_dir = Path(output_dir)
         self.beta = beta
         self.ps_names = ps_names
+        self.pause_during_update = pause_during_update
 
         # Get the name of the property given the specification
         if qc_specification == 'xtb':
@@ -112,14 +116,13 @@ class Thinker(BaseThinker):
 
         # Get the target database size
         self.n_to_evaluate = n_to_evaluate
-        self.target_size = n_to_evaluate + len(self.database)
 
         # List the molecules that have already been searched
         self.already_searched = set([d.identifier['inchi'] for d in self.database])
 
         # Prepare search space
         self.mols = pd.read_csv(search_space, delim_whitespace=True)
-        self.inference_chunks = np.array_split(self.mols, max(len(self.mols) // self.inference_chunk_size, 1))
+        self.inference_chunks = np.array_split(self.mols, len(self.mols) // self.inference_chunk_size + 1)
         self.logger.info(f'Split {len(self.mols)} molecules into {len(self.inference_chunks)} chunks for inference')
 
         # Inter-thread communication stuff
@@ -127,6 +130,7 @@ class Thinker(BaseThinker):
         self.start_training = Event()  # Mark that retraining should start
         self.task_queue_ready = Event()  # Mark that the task queue is ready
         self.update_in_progress = Event()  # Mark that we are currently re-training the model
+        self.update_complete = Event()  # Mark that the update event has finished
         self.task_queue = []  # Holds a list of tasks to be simulated
         self.task_queue_lock = Lock()  # Ensures only one thread edits task queue at a time
         self.num_training_complete = 0  # Tracks when we are done with training all models
@@ -141,6 +145,12 @@ class Thinker(BaseThinker):
 
         # Wait for the first set of tasks to be available
         self.task_queue_ready.wait()
+        
+        # If desired, wait until model update is done
+        if self.pause_during_update:
+            if self.update_in_progress.is_set():
+                self.logger.info(f'Waiting until task queue is updated.')
+            self.update_complete.wait()
 
         # Submit the next task
         with self.task_queue_lock:
@@ -165,6 +175,7 @@ class Thinker(BaseThinker):
         if result.success:
             # Mark that we've had another complete result
             self.n_evaluated += 1
+            self.logger.info(f'Success! Finished screening {self.n_evaluated}/{self.n_to_evaluate} molecules')
 
             # Determine whether to start re-training
             if self.n_evaluated % self.n_complete_before_retrain == 0:
@@ -182,6 +193,11 @@ class Thinker(BaseThinker):
                 data.add_geometry(r)
             for r in hess_records:
                 data.add_single_point(r)
+            data.update_thermochem()
+            apply_recipes(data)
+            
+            # Add the IPs to the result object
+            result.task_infp["ip"] = data.oxidation_potential.copy()
 
             # Add to database
             with open(self.output_dir.joinpath('moldata-records.json'), 'a') as fp:
@@ -193,6 +209,10 @@ class Thinker(BaseThinker):
                 for r in opt_records + hess_records:
                     print(r.json(), file=fp)
             self.logger.info(f'Added complete calculation for {smiles} to database.')
+            
+            # Mark that we've completed one
+            if self.n_evaluated >= self.n_to_evaluate:
+                self.logger.info(f'No more molecules left to screen')
         else:
             self.logger.info(f'Computations failed for {smiles}. Check JSON file for stacktrace')
 
@@ -206,6 +226,7 @@ class Thinker(BaseThinker):
         self.logger.info('Started retraining')
 
         # Set that a retraining event is in progress
+        self.update_complete.clear()
         self.update_in_progress.set()
         self.num_training_complete = 0
 
@@ -276,6 +297,12 @@ class Thinker(BaseThinker):
         # Make a folder for the models
         model_folder = self.output_dir.joinpath('models')
         model_folder.mkdir(exist_ok=True)
+        
+        # Batch add inference chunks to ProxyStore
+        inference_msgs = [chunk['smiles'].tolist() for chunk in self.inference_chunks]
+        if self.ps_names['infer'] is not None:
+            keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
+            inference_msgs = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, keys=keys, strict=True)
 
         # Convert the model messages to disk
         model_msgs = [MPNNMessage(model) for model in self.mpnns]
@@ -287,8 +314,8 @@ class Thinker(BaseThinker):
             
         # Submit the chunks to the workflow engine
         for mid, model_msg in enumerate(model_msgs):
-            for cid, chunk in enumerate(self.inference_chunks):
-                self.queues.send_inputs([model_msg], chunk['smiles'].tolist(),
+            for cid, (chunk, chunk_msg) in enumerate(zip(self.inference_chunks, inference_msgs)):
+                self.queues.send_inputs([model_msg], chunk_msg,
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
                                         task_info={'chunk_id': cid, 'chunk_size': len(chunk), 'model_id': mid})
@@ -330,6 +357,7 @@ class Thinker(BaseThinker):
 
         # Mark that the task list has been updated
         self.update_in_progress.clear()
+        self.update_complete.set()
         self.task_queue_ready.set()
 
     def _select_molecules(self, y_pred):
@@ -382,7 +410,7 @@ if __name__ == '__main__':
     group.add_argument("--qc-endpoint", required=True, help='FuncX endpoint ID for quantum chemistry')
     group.add_argument("--nodes-per-task", default=1, help='Number of nodes per quantum chemistry task. Only needed for NWChem', type=int)
     group.add_argument("--num-qc-workers", required=True, type=int, help="Total number of quantum chemistry workers.")
-    group.add_argument("--molecules-per-ml-task", default=8192, type=int, help="Number of molecules per inference chunk")
+    group.add_argument("--molecules-per-ml-task", default=10000, type=int, help="Number of molecules per inference chunk")
 
     # Problem configuration
     group = parser.add_argument_group(title='Problem Definition', description='Defining the search space, models and optimizers-related settings')
@@ -394,6 +422,7 @@ if __name__ == '__main__':
     group.add_argument("--search-size", default=1000, type=int, help="Number of new molecules to evaluate during this search")
     group.add_argument('--retrain-frequency', default=8, type=int, help="Number of completed computations that will trigger a retraining")
     group.add_argument("--beta", default=1, help="Degree of exploration for active learning. This is the beta from the UCB acquistion function", type=float)
+    group.add_argument("--pause-during-update", action='store_true', help='Whether to stop running simulations while updating task list')
 
     # Parameters related to model retraining
     group = parser.add_argument_group(title='Model Training', description='Settings related to model retraining')
@@ -470,7 +499,7 @@ if __name__ == '__main__':
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
-    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=256, n_jobs=4)
+    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128, n_jobs=8, cache=True)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
     my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True)
@@ -501,6 +530,7 @@ if __name__ == '__main__':
                       args.qc_specification,
                       out_dir,
                       args.beta,
+                      args.pause_during_update,
                       ps_names)
     logging.info('Created the method server and task generator')
 
