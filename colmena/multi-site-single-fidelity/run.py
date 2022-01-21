@@ -16,6 +16,7 @@ import tensorflow as tf
 import proxystore as ps
 from rdkit import Chem
 from funcx import FuncXClient
+from tqdm import tqdm
 from colmena.task_server.funcx import FuncXTaskServer
 from colmena.models import Result
 from colmena.redis.queue import ClientQueues, make_queue_pairs
@@ -121,7 +122,8 @@ class Thinker(BaseThinker):
         self.already_searched = set([d.identifier['inchi'] for d in self.database])
 
         # Prepare search space
-        self.mols = pd.read_csv(search_space, delim_whitespace=True)
+        self.mols = pd.read_csv(search_space)
+        self.mols['dict'] = self.mols['dict'].apply(json.loads)
         self.inference_chunks = np.array_split(self.mols, len(self.mols) // self.inference_chunk_size + 1)
         self.logger.info(f'Split {len(self.mols)} molecules into {len(self.inference_chunks)} chunks for inference')
 
@@ -197,7 +199,7 @@ class Thinker(BaseThinker):
             apply_recipes(data)
             
             # Add the IPs to the result object
-            result.task_infp["ip"] = data.oxidation_potential.copy()
+            result.task_info["ip"] = data.oxidation_potential.copy()
 
             # Add to database
             with open(self.output_dir.joinpath('moldata-records.json'), 'a') as fp:
@@ -213,6 +215,7 @@ class Thinker(BaseThinker):
             # Mark that we've completed one
             if self.n_evaluated >= self.n_to_evaluate:
                 self.logger.info(f'No more molecules left to screen')
+                self.done.set()
         else:
             self.logger.info(f'Computations failed for {smiles}. Check JSON file for stacktrace')
 
@@ -299,7 +302,7 @@ class Thinker(BaseThinker):
         model_folder.mkdir(exist_ok=True)
         
         # Batch add inference chunks to ProxyStore
-        inference_msgs = [chunk['smiles'].tolist() for chunk in self.inference_chunks]
+        inference_msgs = [chunk['dict'].tolist() for chunk in self.inference_chunks]
         if self.ps_names['infer'] is not None:
             keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
             inference_msgs = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, keys=keys, strict=True)
@@ -375,7 +378,7 @@ class Thinker(BaseThinker):
         # Rank compounds according to the upper confidence bound
         molecules = self.mols['inchi'].values
         ucb = y_mean + self.beta * y_std
-        sort_ids = np.argsort(ucb)
+        sort_ids = np.argsort(-ucb)
         best_list = list(zip(molecules[sort_ids].tolist(),
                              y_mean[sort_ids], y_std[sort_ids], ucb[sort_ids]))
 
@@ -444,7 +447,7 @@ if __name__ == '__main__':
     run_params = args.__dict__
 
     # Load in the models, initial dataset, agent and search space
-    models = [tf.keras.models.load_model(path, custom_objects=custom_objects) for path in args.mpnn_model_files]
+    models = [tf.keras.models.load_model(path, custom_objects=custom_objects) for path in tqdm(args.mpnn_model_files, desc='Loading models')]
 
     # Read in the training set
     with open(args.training_set) as fp:
@@ -472,6 +475,11 @@ if __name__ == '__main__':
                 logging.StreamHandler(sys.stdout)]
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
+    
+    # Make the PS files directory inside of the run directory
+    ps_file_dir = os.path.abspath(os.path.join(out_dir, args.ps_file_dir))
+    os.makedirs(ps_file_dir, exist_ok=False)
+    logging.info(f'Scratch directory for ProxyStore files: {ps_file_dir}')
 
     # Init ProxyStore backends
     ps_backends = {args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend}
@@ -480,7 +488,7 @@ if __name__ == '__main__':
     if 'file' in ps_backends:
         if args.ps_file_dir is None:
             raise ValueError('Must specify --ps-file-dir to use the filesystem ProxyStore backend')
-        ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=args.ps_file_dir)
+        ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=ps_file_dir)
     if 'globus' in ps_backends:
         if args.ps_globus_config is None:
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
@@ -490,6 +498,7 @@ if __name__ == '__main__':
 
     # Connect to the redis server
     client_queues, server_queues = make_queue_pairs(args.redishost,
+                                                    name=start_time.strftime("%d%b%y-%H%M%S"),
                                                     port=args.redisport,
                                                     topics=['simulate', 'infer', 'train'],
                                                     serialization_method='pickle',
@@ -499,7 +508,7 @@ if __name__ == '__main__':
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
-    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128, n_jobs=8, cache=True)
+    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128, cache=True)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
     my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True)
