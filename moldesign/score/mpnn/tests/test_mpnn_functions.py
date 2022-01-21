@@ -3,6 +3,7 @@ from time import perf_counter
 import numpy as np
 
 from moldesign.score.mpnn import MPNNMessage, update_mpnn, evaluate_mpnn, retrain_mpnn
+from moldesign.utils.conversions import convert_string_to_dict
 
 
 def test_train(train_dataset, model):
@@ -41,3 +42,8 @@ def test_inference(model):
     results_serial = evaluate_mpnn([model], ['C', 'CC'])
     results_parallel = evaluate_mpnn([model], ['C', 'CC'], n_jobs=2)
     assert np.isclose(results_parallel, results_serial).all()
+
+    # Try running inference on a pre-processed molecule
+    preparsed = [convert_string_to_dict(x) for x in ['C', 'CC']]
+    results_preparsed = evaluate_mpnn([model], preparsed)
+    assert np.isclose(results_preparsed, results_serial).all()

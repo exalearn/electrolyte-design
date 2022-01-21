@@ -54,12 +54,13 @@ class MPNNMessage:
 
 # TODO (wardlt): Split into multiple functions? I don't like having so many input type options
 def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List[str], List[Path]],
-                  smiles: List[str], batch_size: int = 128, cache: bool = True, n_jobs: Optional[int] = 1) -> np.ndarray:
+                  smiles: Union[List[str], List[dict]],
+                  batch_size: int = 128, cache: bool = True, n_jobs: Optional[int] = 1) -> np.ndarray:
     """Run inference on a list of molecules
 
     Args:
         model_msg: List of MPNNs to evaluate. Accepts either a pickled message, model, or a path
-        smiles: List of molecules to evaluate
+        smiles: List of molecules to evaluate either as SMILES or InChI strings, or lists of MPNN-ready dictionary objections
         batch_size: Number of molecules per batch
         cache: Whether to cache models if being read from disk
         n_jobs: Number of parallel jobs to run. Set `None` to use total number of cores
@@ -68,6 +69,7 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
     Returns:
         Predicted value for each molecule
     """
+    assert len(smiles) > 0, "You must provide at least one molecule to inference function"
 
     # Access the model
     if isinstance(model_msg[0], MPNNMessage):
@@ -88,12 +90,17 @@ def evaluate_mpnn(model_msg: Union[List[MPNNMessage], List[tf.keras.Model], List
         # No action needed
         models = model_msg
 
-    # Convert all SMILES strings to batches of molecules
-    if n_jobs == 1:
-        mols = [convert_string_to_dict(s) for s in smiles]
+    # Ensure all molecules are ready for inference
+    if isinstance(smiles[0], dict):
+        mols = smiles
     else:
-        pool = get_process_pool(n_jobs)
-        mols = pool.map(convert_string_to_dict, smiles)
+        if n_jobs == 1:
+            mols = [convert_string_to_dict(s) for s in smiles]
+        else:
+            pool = get_process_pool(n_jobs)
+            mols = pool.map(convert_string_to_dict, smiles)
+
+    # Stuff them into batches
     chunks = [mols[start:start + batch_size] for start in range(0, len(mols), batch_size)]
     batches = [_merge_batch(c) for c in chunks]
 
