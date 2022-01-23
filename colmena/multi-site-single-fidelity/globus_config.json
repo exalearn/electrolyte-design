@@ -1,12 +1,12 @@
 {
-    "alcf#dtn_theta": {
-        "host_regex": "theta(.*?)",
-        "endpoint_path": "/projects/CSC249ADCD08/jgpaul/scratch/proxystore_globus_dump",
-        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/jgpaul/scratch/proxystore_globus_dump"
+    "alcf#08925f04-569f-11e7-bef8-22000b9a448b": {
+        "host_regex": "(theta.*|jupyter.*)",
+        "endpoint_path": "/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/multi-site-single-fidelity/proxy-store-scratch",
+        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/multi-site-single-fidelity/proxy-store-scratch"
     },
-    "endpoint2" : {
-        "host_regex": "host2(.*?)",
-        "endpoint_path": "/globus/path/to/proxystore_dump",
-        "local_path": "/local/path/to/proxystore_dump"
+    "anl#lambda0" : {
+        "host_regex": "lambda.*",
+        "endpoint_path": "/lambda_stor/homes/lward/electrolyte-design/proxystore_stash",
+        "local_path": "/lambda_stor/homes/lward/electrolyte-design/proxystore_stash"
     }
 }

@@ -3,6 +3,7 @@ from typing import Dict, List, Tuple
 from functools import partial, update_wrapper
 from pathlib import Path
 from datetime import datetime
+from queue import Queue
 import argparse
 import logging
 import hashlib
@@ -126,6 +127,12 @@ class Thinker(BaseThinker):
         self.mols['dict'] = self.mols['dict'].apply(json.loads)
         self.inference_chunks = np.array_split(self.mols, len(self.mols) // self.inference_chunk_size + 1)
         self.logger.info(f'Split {len(self.mols)} molecules into {len(self.inference_chunks)} chunks for inference')
+        
+        # Batch add inference chunks to ProxyStore, as they will be used frequently
+        inference_msgs = [chunk['dict'].tolist() for chunk in self.inference_chunks]
+        if self.ps_names['infer'] is not None:
+            keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
+            self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, keys=keys, strict=True)
 
         # Inter-thread communication stuff
         self.start_inference = Event()  # Mark that inference should start
@@ -135,11 +142,16 @@ class Thinker(BaseThinker):
         self.update_complete = Event()  # Mark that the update event has finished
         self.task_queue = []  # Holds a list of tasks to be simulated
         self.task_queue_lock = Lock()  # Ensures only one thread edits task queue at a time
+        self.ready_models = Queue()
         self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
 
-        # Start with inference!
+        # Start with inference. Push all models immediately to the queue after triggering inference engine
         self.start_inference.set()
+        for mpnn in self.mpnns:
+            self.ready_models.put(mpnn)
+        
+        # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
 
     @task_submitter(task_type='simulation')
@@ -283,14 +295,14 @@ class Thinker(BaseThinker):
             self.logger.info(f'Model {model_id} finished training.')
             with open(self.output_dir.joinpath('training-history.json'), 'a') as fp:
                 print(repr(history), file=fp)
+                
+        # Send the model to inference
+        self.start_inference.set()
+        self.ready_models.put(self.mpnns[model_id])
 
         # Mark that a model has finished training and trigger inference if all done
         self.num_training_complete += 1
-        if self.num_training_complete == len(self.mpnns):
-            self.logger.info('All models complete. Triggering inference')
-            self.start_inference.set()
-        else:
-            self.logger.info(f'{len(self.mpnns) - self.num_training_complete} left to go')
+        self.logger.info(f'{len(self.mpnns) - self.num_training_complete} left to go')
 
     @event_responder(event_name='start_inference')
     def launch_inference(self):
@@ -300,25 +312,21 @@ class Thinker(BaseThinker):
         # Make a folder for the models
         model_folder = self.output_dir.joinpath('models')
         model_folder.mkdir(exist_ok=True)
-        
-        # Batch add inference chunks to ProxyStore
-        inference_msgs = [chunk['dict'].tolist() for chunk in self.inference_chunks]
-        if self.ps_names['infer'] is not None:
-            keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
-            inference_msgs = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, keys=keys, strict=True)
-
-        # Convert the model messages to disk
-        model_msgs = [MPNNMessage(model) for model in self.mpnns]
-
-        # Batch add models to ProxyStore (batching is really only helpful with Globus)
-        if self.ps_names['infer'] is not None:
-            keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
-            model_msgs = ps.store.get_store(self.ps_names['infer']).proxy_batch(model_msgs, keys=keys, strict=True)
             
         # Submit the chunks to the workflow engine
-        for mid, model_msg in enumerate(model_msgs):
-            for cid, (chunk, chunk_msg) in enumerate(zip(self.inference_chunks, inference_msgs)):
-                self.queues.send_inputs([model_msg], chunk_msg,
+        for mid in range(len(self.mpnns)):
+            # Get a model that is ready for inference
+            model = self.ready_models.get()
+            
+            # Convert it to a pickle-able message
+            model_msg = MPNNMessage(model)
+            
+            # Proxy it once, to be used by all inference tasks
+            model_msg_proxy = ps.store.get_store(self.ps_names['infer']).proxy(model_msg, key=f'model-{mid}-{self.inference_batch}')
+            
+            # Run inference with all segements available
+            for cid, (chunk, chunk_msg) in enumerate(zip(self.inference_chunks, self.inference_proxies)):
+                self.queues.send_inputs([model_msg_proxy], chunk_msg,
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
                                         task_info={'chunk_id': cid, 'chunk_size': len(chunk), 'model_id': mid})
@@ -339,7 +347,7 @@ class Thinker(BaseThinker):
             self.logger.info(f'Received inference task {i + 1}/{n_tasks}')
 
             # Save the inference information to disk
-            with open(self.output_dir.joinpath('inference-records.json'), 'a') as fp:
+            with open(self.output_dir.joinpath('inference-results.json'), 'a') as fp:
                 print(result.json(exclude={'value'}), file=fp)
 
             # Raise an error if this task failed
@@ -475,8 +483,10 @@ if __name__ == '__main__':
                 logging.StreamHandler(sys.stdout)]
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
+    logging.info(f'Run directory: {out_dir}')
     
     # Make the PS files directory inside of the run directory
+    
     ps_file_dir = os.path.abspath(os.path.join(out_dir, args.ps_file_dir))
     os.makedirs(ps_file_dir, exist_ok=False)
     logging.info(f'Scratch directory for ProxyStore files: {ps_file_dir}')
