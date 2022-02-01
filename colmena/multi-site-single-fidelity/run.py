@@ -48,7 +48,7 @@ def run_simulation(smiles: str, n_nodes: int, spec: str = 'small_basis') -> Tupl
     inchi, xyz = generate_inchi_and_xyz(smiles)
 
     # Make the compute spec
-    compute_config = {'nnodes': n_nodes, 'cores_per_rank': 2}
+    compute_config = {'nnodes': n_nodes, 'cores_per_rank': 2, 'ncores': 64}
 
     # Get the specification and make it more resilient
     spec, code = get_qcinput_specification(spec)
@@ -234,6 +234,7 @@ class Thinker(BaseThinker):
         # Write out the result to disk
         with open(self.output_dir.joinpath('simulation-results.json'), 'a') as fp:
             print(result.json(exclude={'value'}), file=fp)
+        self.logger.info(f'Processed simulation task.')
 
     @event_responder(event_name='start_training')
     def train_models(self):
@@ -264,12 +265,12 @@ class Thinker(BaseThinker):
             # Make the MPNN message
             if self.retrain_from_initial:
                 self.queues.send_inputs(model.get_config(), train_data, method='retrain_mpnn', topic='train',
-                                        task_info={'model_id': mid, 'molecules': list(train_data.keys())},
+                                        task_info={'model_id': mid},
                                         keep_inputs=False,
                                         input_kwargs={'random_state': mid})
             else:
                 self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
-                                        task_info={'model_id': mid, 'molecules': list(train_data.keys())},
+                                        task_info={'model_id': mid}, # 'molecules': list()
                                         keep_inputs=False,
                                         input_kwargs={'random_state': mid})
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
@@ -302,7 +303,7 @@ class Thinker(BaseThinker):
 
         # Mark that a model has finished training and trigger inference if all done
         self.num_training_complete += 1
-        self.logger.info(f'{len(self.mpnns) - self.num_training_complete} left to go')
+        self.logger.info(f'Processed training task. {len(self.mpnns) - self.num_training_complete} models left to go')
 
     @event_responder(event_name='start_inference')
     def launch_inference(self):
@@ -358,6 +359,7 @@ class Thinker(BaseThinker):
             chunk_id = result.task_info.get('chunk_id')
             model_id = result.task_info.get('model_id')
             y_pred[chunk_id][:, model_id] = np.squeeze(result.value)
+            self.logger.info(f'Processed inference task {i + 1}/{n_tasks}')
 
         # Compute the mean and std for each prediction
         y_pred = np.concatenate(y_pred, axis=0)
@@ -521,10 +523,10 @@ if __name__ == '__main__':
     my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128, cache=True)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
-    my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True)
+    my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
     my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
 
-    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True)
+    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
     my_run_simulation = partial(run_simulation, n_nodes=args.nodes_per_task, spec=args.qc_specification)
