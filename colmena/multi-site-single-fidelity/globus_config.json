@@ -1,0 +1,12 @@
+{
+    "alcf#08925f04-569f-11e7-bef8-22000b9a448b": {
+        "host_regex": "(theta.*|jupyter.*)",
+        "endpoint_path": "/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/multi-site-single-fidelity/proxy-store-scratch",
+        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/multi-site-single-fidelity/proxy-store-scratch"
+    },
+    "anl#lambda0" : {
+        "host_regex": "lambda.*",
+        "endpoint_path": "/lambda_stor/homes/lward/electrolyte-design/proxystore_stash",
+        "local_path": "/lambda_stor/homes/lward/electrolyte-design/proxystore_stash"
+    }
+}
