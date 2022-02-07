@@ -4,6 +4,8 @@ from queue import Queue
 from threading import Event
 from typing import List, Set, Tuple
 from pathlib import Path
+from csv import DictWriter
+from time import perf_counter
 import argparse
 import logging
 
@@ -11,23 +13,56 @@ from colmena.redis.queue import make_queue_pairs, ClientQueues
 from colmena.task_server import ParslTaskServer
 from colmena.thinker import BaseThinker, agent, ResourceCounter
 from parsl import Config, HighThroughputExecutor
+from parsl.addresses import address_by_hostname
+from parsl.launchers import AprunLauncher
+from parsl.providers import CobaltProvider
 from rdkit import Chem
+import proxystore as ps
 import yaml
 
 
-def parsl_config() -> Tuple[Config, int]:
+def parsl_config(name: str) -> Tuple[Config, int]:
     """Make the compute resource configuration
 
+    Args:
+        name: Name of the diesred configuration
     Returns:
         - Parsl compute configuration
         - Number of compute slots: Includes execution slots and pre-fetch buffers
     """
 
-    return Config(
-        executors=[
-            HighThroughputExecutor(max_workers=8)
-        ]
-    ), 32
+    if name == 'local':
+        return Config(
+            executors=[
+                HighThroughputExecutor(max_workers=16, prefetch_capacity=1)
+            ]
+        ), 64
+    elif name == 'theta-debug':
+        return Config(
+            executors=[HighThroughputExecutor(
+                    address=address_by_hostname(),
+                    label="debug",
+                    max_workers=64,
+                    prefetch_capacity=2,
+                    cpu_affinity='block',
+                    provider=CobaltProvider(
+                        account='redox_adsp',
+                        queue='debug-cache-quad',
+                        nodes_per_block=8,
+                        scheduler_options='#COBALT --attrs enable_ssh=1',
+                        walltime='00:60:00',
+                        init_blocks=0,
+                        max_blocks=1,
+                        cmd_timeout=360,
+                        launcher=AprunLauncher(overrides='-d 64 --cc depth -j 1'),
+                        worker_init='''
+module load miniconda-3
+conda activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env''',
+                    ),
+                )]
+            ), 64 * 8 * 4
+    else:
+        raise ValueError(f'Configuration not defined: {name}')
 
 
 class ScreenEngine(BaseThinker):
@@ -67,15 +102,18 @@ class ScreenEngine(BaseThinker):
         self.total_chunks = 0
         self.total_molecules = 0
 
-    @agent(critical=False)
+    @agent(startup=True)
     def read_chunks(self):
         """Read chunks to be screened"""
 
         with self.screen_path.open() as fp:
             chunk = []
             for line in fp:
-                # The line is comma-separated with the last entry as the string
-                _, smiles = line.rsplit(",", 1)
+                try:
+                    # The line is comma-separated with the last entry as the string
+                    _, smiles = line.rsplit(",", 1)
+                except:
+                    continue
                 self.total_molecules += 1
 
                 # Add to the chunk and submit if we hit the target size
@@ -96,7 +134,7 @@ class ScreenEngine(BaseThinker):
         self.logger.info(f'Finished reading {self.total_molecules} molecules and submitting {self.total_chunks} blocks')
         self.all_read.set()
 
-    @agent(critical=False)
+    @agent(startup=True)
     def submit_task(self):
         """Submit chunks of molecules to be screened"""
         while True:
@@ -114,9 +152,12 @@ class ScreenEngine(BaseThinker):
         """Write the screened molecules to disk"""
 
         # Open the output file
+        start_time = perf_counter()
         num_recorded = 0
         total_passed = 0
-        with open(self.output_dir / "screened_molecules.smi", 'w') as fp:
+        with open(self.output_dir / "screened_molecules.csv", 'w') as fp:
+            writer = DictWriter(fp, ['inchi', 'smiles', 'molwt', 'dict'])
+            writer.writeheader()
             while True:
                 # Stop when all have been recorded
                 if self.all_read.is_set() and num_recorded >= self.total_chunks:
@@ -130,8 +171,8 @@ class ScreenEngine(BaseThinker):
                     raise ValueError('Failed task')
 
                 # Write the molecules in the chunk to disk
-                for smiles in result.value:
-                    print(smiles, file=fp)
+                for row in result.value:
+                    writer.writerow(row)
                     total_passed += 1
                 num_recorded += 1
 
@@ -139,10 +180,12 @@ class ScreenEngine(BaseThinker):
                 if self.all_read.is_set():
                     self.logger.info(f'Recorded task {num_recorded}/{self.total_chunks}. Molecules so far: {total_passed}')
                 else:
-                    self.logger.info(f'Recorded task {num_recorded}/???. Molecules so far: {num_recorded}')
+                    self.logger.info(f'Recorded task {num_recorded}/???. Molecules so far: {total_passed}')
 
         # Print the final status
         self.logger.info(f'{total_passed}/{self.total_molecules} ({total_passed / self.total_molecules * 100:.1f}%) passed the screens')
+        run_time = perf_counter() - start_time
+        self.logger.info(f'Runtime {run_time:.2f} s. Evaluation rate: {self.total_molecules / run_time:.3e} mol/s')
 
 
 def screen_molecules(to_screen: List[str], max_molecular_weight: float, forbidden_smarts: List[str], allowed_elements: Set[str]) -> List[str]:
@@ -154,8 +197,11 @@ def screen_molecules(to_screen: List[str], max_molecular_weight: float, forbidde
         forbidden_smarts: List of SMARTS that cannot appear in a molecule
         allowed_elements: List of allowed elements
     """
+    import json
+    import numpy as np
     from rdkit import Chem
     from rdkit.Chem import Descriptors
+    from moldesign.utils.conversions import convert_rdkit_to_dict
 
     # Pre-parse the SMARTS strings
     smarts = [Chem.MolFromSmarts(s) for s in forbidden_smarts]
@@ -175,13 +221,29 @@ def screen_molecules(to_screen: List[str], max_molecular_weight: float, forbidde
 
         # Skip if it contains a disallowed elements
         if any(atom.GetSymbol() not in allowed_elements for atom in mol.GetAtoms()):
-            continue
-
+                continue
+        
         # Skip if it contains a disallowed group
-        if any(s.HasSubstructMatch(s) for s in smarts):
+        try:
+            if any(mol.HasSubstructMatch(s) for s in smarts):
+                continue
+        except:
             continue
-
-        passed.append(smiles)
+            
+        # Parse it into dictionary format
+        mol = Chem.AddHs(mol)
+        moldict = convert_rdkit_to_dict(mol)
+        
+        # Prepare it to be JSON serialized
+        moldict = dict((k, v.tolist() if isinstance(v, np.ndarray) else v) for k, v in moldict.items())
+        
+        # Add it to the output dictionary
+        passed.append({
+            'smiles': smiles,
+            'inchi': Chem.MolToInchi(mol),
+            'molwt': mol_wt,
+            'dict': json.dumps(moldict)
+        })
 
     return passed
 
@@ -196,8 +258,9 @@ if __name__ == '__main__':
     parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
     parser.add_argument('--max-molecular-weight', default=150, help='Maximum allowed molecular weight. Units: g/mol. Default based on doi: 10.1039/C4EE02158D',
                         type=float)
-    parser.add_argument("--molecules-per-chunk", default=10000, type=int, help="Number molecules per screening task")
+    parser.add_argument("--molecules-per-chunk", default=50000, type=int, help="Number molecules per screening task")
     parser.add_argument("-s", "--screening-parameters", default=None, help='Path to list of allowed elements and forbidden groups')
+    parser.add_argument('--compute', default='local', help='Resource configuration')
     parser.add_argument('--overwrite', action='store_true', help='Whether to overwrite a previous run')
 
     # Parse the arguments
@@ -217,7 +280,6 @@ if __name__ == '__main__':
     for smarts in screen_params['bad_smarts']:
         if Chem.MolFromSmarts(smarts) is None:
             raise ValueError(f'Invalid SMARTS: {smarts}')
-
     # Create an output directory with the name of the directory, delete previous if exists
     out_path = Path().joinpath('runs', f'{search_path.name[:-4]}-molwt={args.max_molecular_weight}-params={screen_params_path.name[:-4]}')
     out_path.mkdir(parents=True, exist_ok=args.overwrite)
@@ -247,10 +309,17 @@ if __name__ == '__main__':
     update_wrapper(screen_fun, screen_molecules)
 
     # Make Parsl engine
-    config, n_slots = parsl_config()
+    config, n_slots = parsl_config(args.compute)
+
+    # Configure the file 
+    ps_file_dir = out_path / 'file-store'
+    ps_file_dir.mkdir(exist_ok=True)
+    #file_store = ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport)
+    file_store = ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=str(ps_file_dir))
 
     # Make the task queues and task server
-    client_q, server_q = make_queue_pairs(args.redishost, args.redisport, keep_inputs=False)
+    client_q, server_q = make_queue_pairs(args.redishost, args.redisport, keep_inputs=False, serialization_method='pickle',
+                                          proxystore_threshold=1000, proxystore_name='file')
     task_server = ParslTaskServer([screen_fun], server_q, config)
 
     # Make the thinker
@@ -263,4 +332,5 @@ if __name__ == '__main__':
     finally:
         client_q.send_kill_signal()
 
-    task_server.kill()
+    task_server.join()
+    file_store.cleanup()
