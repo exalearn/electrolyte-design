@@ -5,9 +5,10 @@ from threading import Event
 from typing import List, Set, Tuple
 from pathlib import Path
 from csv import DictWriter
-from time import perf_counter
+from datetime import datetime
 import argparse
 import logging
+import json
 
 from colmena.redis.queue import make_queue_pairs, ClientQueues
 from colmena.task_server import ParslTaskServer
@@ -18,6 +19,7 @@ from parsl.launchers import AprunLauncher
 from parsl.providers import CobaltProvider
 from rdkit import Chem
 import proxystore as ps
+import numpy as np
 import yaml
 
 
@@ -39,6 +41,7 @@ def parsl_config(name: str) -> Tuple[Config, int]:
         ), 64
     elif name == 'theta-debug':
         return Config(
+            retries=16,
             executors=[HighThroughputExecutor(
                     address=address_by_hostname(),
                     label="debug",
@@ -47,7 +50,7 @@ def parsl_config(name: str) -> Tuple[Config, int]:
                     cpu_affinity='block',
                     provider=CobaltProvider(
                         account='redox_adsp',
-                        queue='debug-cache-quad',
+                        queue='debug-flat-quad',
                         nodes_per_block=8,
                         scheduler_options='#COBALT --attrs enable_ssh=1',
                         walltime='00:60:00',
@@ -73,6 +76,7 @@ class ScreenEngine(BaseThinker):
     Parameters:
         queues: List of queues
         screen_path: Path to molecules to be screened
+        store: Store used to pass inputs from thinker to worker
         output_dir: Path to the output directory
         slot_count: Number of execution slots
         chunk_size: Number of molecules per chunk
@@ -80,6 +84,7 @@ class ScreenEngine(BaseThinker):
 
     def __init__(self,
                  queues: ClientQueues,
+                 store: ps.store.remote.RemoteStore,
                  screen_path: Path,
                  output_dir: Path,
                  slot_count: int,
@@ -93,6 +98,7 @@ class ScreenEngine(BaseThinker):
         self.screen_path = screen_path
         self.output_dir = output_dir
         self.chunk_size = chunk_size
+        self.store = store
 
         # Queue to store ready-to-compute chunks
         self.screen_queue = Queue(slot_count * 2)
@@ -105,6 +111,19 @@ class ScreenEngine(BaseThinker):
     @agent(startup=True)
     def read_chunks(self):
         """Read chunks to be screened"""
+        
+        # Make a function to push a chunk of molecules to the execution queue
+        def _proxy_and_push(chunk):
+            # Submit the object to the proxy store
+            key = f'chunk-{self.total_chunks}'
+            chunk_proxy = self.store.proxy(chunk, key=key)
+            
+            # Increment the count
+            self.total_chunks += 1
+            
+            # Put the proxy and the key in the queue
+            self.screen_queue.put((chunk_proxy, key))
+            
 
         with self.screen_path.open() as fp:
             chunk = []
@@ -119,13 +138,11 @@ class ScreenEngine(BaseThinker):
                 # Add to the chunk and submit if we hit the target size
                 chunk.append(smiles)
                 if len(chunk) >= self.chunk_size:
-                    self.screen_queue.put(chunk)
-                    self.total_chunks += 1
+                    _proxy_and_push(chunk)
                     chunk = []
-
+                    
         # Submit whatever remains
-        self.screen_queue.put(chunk)
-        self.total_chunks += 1
+        _proxy_and_push(chunk)
 
         # Put a None at the end to signal we are done
         self.screen_queue.put(None)
@@ -139,23 +156,26 @@ class ScreenEngine(BaseThinker):
         """Submit chunks of molecules to be screened"""
         while True:
             # Get the next chunk and, if None, break
-            chunk = self.screen_queue.get()
-            if chunk is None:
+            msg = self.screen_queue.get()
+            if msg is None:
                 break
+                
+            # Create a proxy for the chunk data
+            chunk, key = msg
 
             # Submit once we have resources available
             self.rec.acquire("screen", 1)
-            self.queues.send_inputs(chunk, method='screen_molecules')
+            self.queues.send_inputs(chunk, method='screen_molecules', task_info={'key': key})
 
     @agent()
     def receive_results(self):
         """Write the screened molecules to disk"""
 
         # Open the output file
-        start_time = perf_counter()
+        start_time = np.inf  # Use the time the first compute starts
         num_recorded = 0
         total_passed = 0
-        with open(self.output_dir / "screened_molecules.csv", 'w') as fp:
+        with open(self.output_dir / "screened_molecules.csv", 'w') as fp, open(self.output_dir / 'inference-results.json', 'w') as fq:
             writer = DictWriter(fp, ['inchi', 'smiles', 'molwt', 'dict'])
             writer.writeheader()
             while True:
@@ -169,12 +189,22 @@ class ScreenEngine(BaseThinker):
                 if not result.success:
                     self.logger.error(f'Task failed. Traceback: {result.failure_info.traceback}')
                     raise ValueError('Failed task')
+                    
+                # Update the start time
+                start_time = min(start_time, result.time_compute_started)
 
                 # Write the molecules in the chunk to disk
+                #  TODO (wardlt): Make this asynchronous, so we don't block sending new tasks while writing others out
                 for row in result.value:
                     writer.writerow(row)
                     total_passed += 1
                 num_recorded += 1
+                
+                # Remove the chunk from the proxystore
+                self.store.evict(result.task_info['key'])
+                
+                # Save the JSON result
+                print(result.json(exclude={'inputs', 'value'}), file=fq)
 
                 # Print a status message
                 if self.all_read.is_set():
@@ -184,7 +214,7 @@ class ScreenEngine(BaseThinker):
 
         # Print the final status
         self.logger.info(f'{total_passed}/{self.total_molecules} ({total_passed / self.total_molecules * 100:.1f}%) passed the screens')
-        run_time = perf_counter() - start_time
+        run_time = datetime.now().timestamp() - start_time
         self.logger.info(f'Runtime {run_time:.2f} s. Evaluation rate: {self.total_molecules / run_time:.3e} mol/s')
 
 
@@ -261,6 +291,7 @@ if __name__ == '__main__':
     parser.add_argument("--molecules-per-chunk", default=50000, type=int, help="Number molecules per screening task")
     parser.add_argument("-s", "--screening-parameters", default=None, help='Path to list of allowed elements and forbidden groups')
     parser.add_argument('--compute', default='local', help='Resource configuration')
+    parser.add_argument('--proxy-store', default='file', help='What kind of proxy store to use')
     parser.add_argument('--overwrite', action='store_true', help='Whether to overwrite a previous run')
 
     # Parse the arguments
@@ -280,14 +311,19 @@ if __name__ == '__main__':
     for smarts in screen_params['bad_smarts']:
         if Chem.MolFromSmarts(smarts) is None:
             raise ValueError(f'Invalid SMARTS: {smarts}')
-    # Create an output directory with the name of the directory, delete previous if exists
+    
+    # Create an output directory with the name of the directory
     out_path = Path().joinpath('runs', f'{search_path.name[:-4]}-molwt={args.max_molecular_weight}-params={screen_params_path.name[:-4]}')
     out_path.mkdir(parents=True, exist_ok=args.overwrite)
+    
+    # Store the run parameters
     with open(out_path / 'screen-params.yaml', 'w') as fp:
         fp.write(screen_params_path.read_text())
-
+    with open(out_path / 'run-config.json', 'w') as fp:
+        json.dumps(run_params, indent=2)
+    
     # Set up the logging
-    handlers = [logging.FileHandler(out_path / 'runtime.log'), logging.StreamHandler(sys.stdout)]
+    handlers = [logging.FileHandler(out_path / 'runtime.log', mode='w'), logging.StreamHandler(sys.stdout)]
 
 
     class ParslFilter(logging.Filter):
@@ -312,18 +348,22 @@ if __name__ == '__main__':
     config, n_slots = parsl_config(args.compute)
 
     # Configure the file 
-    ps_file_dir = out_path / 'file-store'
-    ps_file_dir.mkdir(exist_ok=True)
-    #file_store = ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport)
-    file_store = ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=str(ps_file_dir))
+    if args.proxy_store == 'file':
+        ps_file_dir = out_path / 'file-store'
+        ps_file_dir.mkdir(exist_ok=True)
+        store = ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=str(ps_file_dir))
+    elif args.proxy_store == 'redis':
+        store = ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport)
+    else:
+        raise ValueError('ProxyStore config not recognized: {}')
 
     # Make the task queues and task server
     client_q, server_q = make_queue_pairs(args.redishost, args.redisport, keep_inputs=False, serialization_method='pickle',
-                                          proxystore_threshold=1000, proxystore_name='file')
+                                          proxystore_threshold=1000, proxystore_name=store.name)
     task_server = ParslTaskServer([screen_fun], server_q, config)
 
     # Make the thinker
-    thinker = ScreenEngine(client_q, search_path, out_path, n_slots, args.molecules_per_chunk)
+    thinker = ScreenEngine(client_q, store, search_path, out_path, n_slots, args.molecules_per_chunk)
 
     # Run the program
     try:
@@ -333,4 +373,4 @@ if __name__ == '__main__':
         client_q.send_kill_signal()
 
     task_server.join()
-    file_store.cleanup()
+    store.cleanup()
