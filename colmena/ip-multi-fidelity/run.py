@@ -244,7 +244,7 @@ class Thinker(BaseThinker):
         
         # Check if it failed due to a ManagerLost exception
         if result.failure_info is not None and \
-            'ManagerLost: Task failure due to loss of manager' in result.failure_info.exception:
+            'Task failure due to loss of manager' in result.failure_info.exception:
             # If so, resubmit it
             self.logger.info('Task failed due to manager loss. Resubmitting, as this task could still succeed')
             self.queues.send_inputs(*result.args, input_kwargs=result.kwargs, task_info=result.task_info,
