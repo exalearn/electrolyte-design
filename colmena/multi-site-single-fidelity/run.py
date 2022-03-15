@@ -26,10 +26,9 @@ from colmena.thinker.resources import ResourceCounter
 from qcelemental.models import OptimizationResult, AtomicResult
 
 from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, MPNNMessage, custom_objects
-from moldesign.simulate.functions import run_single_point
 from moldesign.store.models import MoleculeData
 from moldesign.store.mongo import MoleculePropertyDB
-from moldesign.store.recipes import apply_recipes
+from moldesign.store.recipes import apply_recipes, get_recipe_by_name
 from moldesign.utils import get_platform_info
 
 
@@ -45,9 +44,9 @@ def run_simulation(smiles: str, n_nodes: int, spec_name: str = 'small_basis', so
     Returns:
         Relax records for the neutral and ionized geometry
     """
-    from moldesign.simulate.functions import generate_inchi_and_xyz, relax_structure
+    from moldesign.simulate.functions import generate_inchi_and_xyz, relax_structure, run_single_point
     from moldesign.simulate.specs import get_qcinput_specification
-    from moldesign.utils.chemistry import  get_baseline_charge
+    from moldesign.utils.chemistry import get_baseline_charge
 
     # Make the initial geometry
     inchi, xyz = generate_inchi_and_xyz(smiles)
@@ -79,7 +78,7 @@ def run_simulation(smiles: str, n_nodes: int, spec_name: str = 'small_basis', so
         spec.keywords["geometry__noautoz"] = True
 
     neutral_solvent = run_single_point(neutral_xyz, 'energy', spec, compute_config=compute_config, charge=neu_charge, code=code)
-    charged_solvent = run_single_point(neutral_xyz, 'energy', spec, compute_config=compute_config, charge=chg_charge, code=code)
+    charged_solvent = run_single_point(oxidized_xyz, 'energy', spec, compute_config=compute_config, charge=chg_charge, code=code)
 
     return [neutral_relax, oxidized_relax], [neutral_solvent, charged_solvent]
 
@@ -97,7 +96,7 @@ class Thinker(BaseThinker):
                  mpnns: List[str],
                  inference_chunk_size: int,
                  num_qc_workers: int,
-                 qc_specification: str,
+                 target_level: str,
                  output_dir: str,
                  beta: float,
                  pause_during_update: bool,
@@ -130,10 +129,7 @@ class Thinker(BaseThinker):
         self.pause_during_update = pause_during_update
 
         # Get the name of the property given the specification
-        if qc_specification == 'xtb':
-            self.property_name = 'xtb-vacuum'
-        elif qc_specification == 'small_basis':
-            self.property_name = 'smb-vacuum-no-zpe'
+        self.property_name = target_level
 
         # Get the initial database
         self.database = database
@@ -175,10 +171,8 @@ class Thinker(BaseThinker):
         self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
 
-        # Start with training.
+        # Start with training so that we ensure the models are as up-to-date as possible
         self.start_training.set()
-        #for mpnn in self.mpnns:
-#            self.ready_models.put(mpnn)
         
         # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
@@ -294,7 +288,6 @@ class Thinker(BaseThinker):
         if self.ps_names['train'] is not None:
             train_data = ps.store.get_store(self.ps_names['train']).proxy(train_data, key='train-data')
 
-        
         for mid, (model, model_msg) in enumerate(zip(self.mpnns, model_msgs)):
             # Make the MPNN message
             if self.retrain_from_initial:
@@ -467,8 +460,7 @@ if __name__ == '__main__':
 
     # Problem configuration
     group = parser.add_argument_group(title='Problem Definition', description='Defining the search space, models and optimizers-related settings')
-    group.add_argument('--qc-specification', default='xtb', choices=['xtb', 'small_basis'],
-                       help='Which level of quantum chemistry to run')
+    group.add_argument('--target-recipe', default='xtb-vacuum', help='Target level of accuracy to compute')
     group.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
     group.add_argument('--search-space', help='Path to molecules to be screened', required=True)
     group.add_argument('--search-space-name', help='Short name to use for the molecule search space', required=True)
@@ -499,10 +491,18 @@ if __name__ == '__main__':
     # Connect to MongoDB
     database = MoleculePropertyDB.from_connection_info(hostname=args.mongohost, port=args.mongoport)
 
+    # Get the target level of accuracy
+    target_recipe = get_recipe_by_name(args.target_recipe)
+    assert target_recipe.geometry_level == target_recipe.energy_level, "Workflow is hard-coded to use one QC spec"
+    assert target_recipe.zpe_level is None, "Workflow is hard-coded to not use ZPE correction"
+    assert target_recipe.adiabatic, "Workflow is hard-coded to run adiabatic calculations"
+    qc_spec = target_recipe.geometry_level
+    solvent = target_recipe.solvent
+
     # Create an output directory with the time and run parameters
     start_time = datetime.utcnow()
     params_hash = hashlib.sha256(json.dumps(run_params).encode()).hexdigest()[:6]
-    out_dir = os.path.join('runs', f'{args.qc_specification}-N{args.num_qc_workers}-n{args.nodes_per_task}-{params_hash}-{start_time.strftime("%d%b%y-%H%M%S")}')
+    out_dir = os.path.join('runs', f'{args.target_recipe}-N{args.num_qc_workers}-n{args.nodes_per_task}-{params_hash}-{start_time.strftime("%d%b%y-%H%M%S")}')
     os.makedirs(out_dir, exist_ok=False)
 
     # Save the run parameters to disk
@@ -564,7 +564,7 @@ if __name__ == '__main__':
     my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
-    my_run_simulation = partial(run_simulation, n_nodes=args.nodes_per_task, spec_name=args.qc_specification)
+    my_run_simulation = partial(run_simulation, n_nodes=args.nodes_per_task, spec_name=qc_spec, solvent=solvent)
     my_run_simulation = update_wrapper(my_run_simulation, run_simulation)
 
     # Create the task servers
@@ -584,7 +584,7 @@ if __name__ == '__main__':
                       args.mpnn_model_files,
                       args.molecules_per_ml_task,
                       args.num_qc_workers,
-                      args.qc_specification,
+                      args.target_recipe,
                       out_dir,
                       args.beta,
                       args.pause_during_update,
