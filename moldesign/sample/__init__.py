@@ -1,1 +1,3 @@
-"""Functions for generating new molecules"""
+"""Functions for generating new molecules
+
+Placeholder for operations used later"""
