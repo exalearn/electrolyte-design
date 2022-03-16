@@ -1,36 +1,29 @@
-from pathlib import Path
-
 from pytest import fixture
 
-from moldesign.specify import FidelityLevel
+from moldesign.specify import MultiFidelitySpecification
 from moldesign.store.models import MoleculeData, OxidationState
 
 
 @fixture()
 def example_record() -> MoleculeData:
-    return MoleculeData.parse_file(Path(__file__).parent / 'example.json')
+    return MoleculeData.from_identifier(smiles='O')
 
 
 def test_get_required(example_record):
-    # We need to do a relaxation to get the adiabatic EA @ SMB level
-    level = FidelityLevel(
-        recipe='smb-vacuum-no-zpe',
-        model_path='.',
-        model_type='mpnn'
-    )
-    required = level.get_required_calculations(example_record, OxidationState.REDUCED)
-    assert len(required) == 1
-    assert required[0][-1]  # Means it is a relaxation
+    levels = MultiFidelitySpecification(levels=['xtb-vacuum', 'xtb-acn'])
 
-    # We need to do a single-point for the vertical IP @ SMB level
-    level = FidelityLevel(
-        recipe='smb-vacuum-vertical',
-        model_path='.',
-        model_type='mpnn'
-    )
-    required = level.get_required_calculations(example_record, OxidationState.OXIDIZED)
-    assert len(required) == 1
-    assert not required[0][-1]  # Means it is a single-point
-    assert required[0][-2] is None  # Means it is in vacuum
-    assert required[0][-3] == -1  # Charge of -1
-    assert required[0][0] == 'small_basis'
+    # Nothing has been done, so our first step will be level 1
+    assert levels.get_next_step(example_record, OxidationState.OXIDIZED) == 'xtb-vacuum'
+    assert levels.get_next_step(example_record, OxidationState.REDUCED) == 'xtb-vacuum'
+
+    # Let's add an IP value @ xtb-vacuum, we then are ready for xtb-acn for that level
+    example_record.oxidation_potential['xtb-vacuum'] = 1
+
+    assert levels.get_next_step(example_record, OxidationState.OXIDIZED) == 'xtb-acn'
+    assert levels.get_next_step(example_record, OxidationState.REDUCED) == 'xtb-vacuum'
+
+    # Let's add IP value @ xtb-acn, which means we are done!
+    example_record.oxidation_potential['xtb-acn'] = 2
+
+    assert levels.get_next_step(example_record, OxidationState.OXIDIZED) is None
+    assert levels.get_next_step(example_record, OxidationState.REDUCED) == 'xtb-vacuum'

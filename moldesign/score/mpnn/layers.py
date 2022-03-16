@@ -290,9 +290,28 @@ class DenormalizeLayer(layers.Layer):
         return inputs * self.std + self.mean
 
 
+class Segment(layers.Layer):
+    """Class to perform a segment* documentation"""
+
+    def __init__(self, choice: str, **kwargs):
+        super().__init__(**kwargs)
+        self.choice = choice
+        self.fn = getattr(tf.math, f'segment_{choice}')
+
+    def call(self, inputs, **kwargs):
+        return self.fn(*inputs)
+
+    def get_config(self):
+        config = super().get_config()
+        config['choice'] = self.choice
+        return config
+
+
 custom_objects = {
     'GraphNetwork': GraphNetwork,
     'MessageBlock': MessageBlock,
     'Squeeze': Squeeze,
-    'DenormalizeLayer': DenormalizeLayer
+    'DenormalizeLayer': DenormalizeLayer,
+    'CartesianProduct': CartesianProduct,
+    'Segment': Segment
 }
