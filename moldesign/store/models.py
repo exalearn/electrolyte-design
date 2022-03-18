@@ -1,6 +1,6 @@
 """Data models for storing molecular property data"""
 from hashlib import sha1
-from typing import Dict, List, Optional, Union, Tuple, Any
+from typing import Dict, List, Optional, Union, Tuple
 from enum import Enum
 
 import numpy as np
@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from qcelemental.models import Molecule, OptimizationResult, AtomicResult
 from qcelemental.physical_constants import constants
 
+from moldesign.simulate.functions import generate_inchi_and_xyz
 from moldesign.simulate.specs import lookup_reference_energies, infer_specification_from_result
 from moldesign.simulate.thermo import compute_zpe_from_freqs, subtract_reference_energies, compute_frequencies
 from moldesign.utils.chemistry import get_baseline_charge
@@ -36,17 +37,18 @@ class OxidationState(str, Enum):
     OXIDIZED = "oxidized"
 
     @classmethod
-    def from_charge(cls, charge: int, smiles: str) -> 'OxidationState':
+    def from_charge(cls, charge: int, mol_string: str) -> 'OxidationState':
         """Get the oxidation from the charge
 
         Args:
             charge: Charge state
-            smiles: SMILES string of the molecule. Oxidation states are relative to the formal charge of the molecule
+            mol_string: SMILES or InChI string of the molecule.
+                Oxidation states are relative to the formal charge of this molecule
         Returns:
             Name of the charge state
         """
 
-        net_charge = charge - get_baseline_charge(smiles)
+        net_charge = charge - get_baseline_charge(mol_string)
         if net_charge == 0:
             return OxidationState.NEUTRAL
         elif net_charge == 1:
@@ -54,7 +56,7 @@ class OxidationState(str, Enum):
         elif net_charge == -1:
             return OxidationState.REDUCED
         else:
-            raise ValueError(f'Unrecognized charge state, {charge}, for {smiles}')
+            raise ValueError(f'Unrecognized charge state, {charge}, for {mol_string}')
 
 
 def get_charge(state: Union[OxidationState, str]) -> int:
@@ -293,23 +295,6 @@ class MoleculeData(BaseModel):
         else:
             raise ValueError('No identifiers are compatible with RDKit')
 
-    def get_property(self, path: str) -> Optional[Any]:
-        """Get the property at a certain path in the model.
-
-        Uses the "dot notation" of Mongo (ex: "reduction_potential.smb-acn")
-
-        Args:
-            path: Path to the desired data
-        Returns:
-            Requested data or ``None`` if not present
-        """
-        cur = self.dict()
-        for attr in path.split("."):
-            if attr not in cur:
-                return None
-            cur = cur[attr]
-        return cur
-
     def add_all_identifiers(self):
         """Set all possible identifiers for a molecule"""
 
@@ -498,47 +483,7 @@ class RedoxEnergyRecipe(BaseModel):
     # Defining the level used to get the total energy, ZPE and solvation energy
     energy_level: AccuracyLevel = Field(..., help="Accuracy level used to compute the total energies")
     zpe_level: Optional[AccuracyLevel] = Field(None, help="Accuracy level used to compute the zero-point energy")
-    solvation_level: Optional[AccuracyLevel] = Field(None, help="Accuracy level used to compute the solvation energy. "
-                                                                "Default is the same level as 'energy'")
-
-    def get_required_data(self, oxidation_state: Union[str, OxidationState]) -> List[str]:
-        """List of data fields required for this computation to complete
-
-        Args:
-            oxidation_state: Target oxidation state
-        """
-
-        # Mark the 3D geometries used for the neutral and ionic properties
-        neutral_rec = f'data.{self.geometry_level}.neutral'
-        if self.adiabatic:
-            charged_rec = f'data.{self.geometry_level}.{oxidation_state}'
-        else:
-            charged_rec = neutral_rec
-
-        # Add in the required geometries
-        output = [f'{x}.xyz' for x in [neutral_rec, charged_rec]]
-
-        # Add in the required total energies
-        output.extend([
-            f'{neutral_rec}.total_energy.neutral.{self.energy_level}',
-            f'{charged_rec}.total_energy.{oxidation_state}.{self.energy_level}',
-        ])
-
-        # Add in ZPEs, if needed
-        if self.zpe_level is not None:
-            output.extend([
-                f'{neutral_rec}.zpe.neutral.{self.energy_level}',
-                f'{charged_rec}.zpe.{oxidation_state}.{self.energy_level}',
-            ])
-
-        # Add in the solvation energies, if needed
-        if self.solvent is not None:
-            level = self.energy_level if self.solvation_level is None else self.solvation_level
-            output.extend([
-                f'{neutral_rec}.total_energy_in_solvent.neutral.{self.solvent}.{level}',
-                f'{charged_rec}.total_energy_in_solvent.{oxidation_state}.{self.solvent}.{level}',
-            ])
-        return output
+    solvation_level: Optional[AccuracyLevel] = Field(None, help="Accuracy level used to compute the solvation energy")
 
     def compute_redox_potential(self, mol_data: MoleculeData,
                                 oxidation_state: Union[str, OxidationState]) -> float:
@@ -570,7 +515,7 @@ class RedoxEnergyRecipe(BaseModel):
         if self.energy_level not in ionized_geometry.total_energy[oxidation_state]:
             raise ValueError(f'Total energy not available at {self.energy_level} for {oxidation_state} molecule')
         delta_g = ionized_geometry.total_energy[oxidation_state][self.energy_level] - \
-            neutral_geometry.total_energy[OxidationState.NEUTRAL][self.energy_level]
+                  neutral_geometry.total_energy[OxidationState.NEUTRAL][self.energy_level]
 
         # Adjust with the ZPEs, if required
         if self.zpe_level is not None:
@@ -579,18 +524,19 @@ class RedoxEnergyRecipe(BaseModel):
             if self.zpe_level not in ionized_geometry.zpe[oxidation_state]:
                 raise ValueError(f'ZPE not available at {self.energy_level} for {oxidation_state} molecule')
             delta_g += ionized_geometry.zpe[oxidation_state][self.energy_level] - \
-                neutral_geometry.zpe[OxidationState.NEUTRAL][self.energy_level]
+                       neutral_geometry.zpe[OxidationState.NEUTRAL][self.energy_level]
 
         # Adjust with solvation energy, if required
-        if self.solvent is not None:
-            level = self.energy_level if self.solvation_level is None else self.solvation_level
-            if level not in neutral_geometry.total_energy_in_solvent[OxidationState.NEUTRAL][self.solvent]:
-                raise ValueError(f'Energy not available in {self.solvent} at {level} for neutral molecule')
-            if level not in ionized_geometry.total_energy_in_solvent[oxidation_state][self.solvent]:
-                raise ValueError(f'Energy not available in {self.solvent} at {level} for {oxidation_state} molecule')
+        if self.solvation_level is not None and self.solvent is not None:
+            if self.solvation_level not in \
+                    neutral_geometry.total_energy_in_solvent[OxidationState.NEUTRAL][self.solvent]:
+                raise ValueError(f'Energy not available in {self.solvent} at {self.energy_level} for neutral molecule')
+            if self.solvation_level not in ionized_geometry.total_energy_in_solvent[oxidation_state][self.solvent]:
+                raise ValueError(f'Energy not available in {self.solvent} at {self.energy_level}'
+                                 f' for {oxidation_state} molecule')
             delta_g += \
-                ionized_geometry.solvation_energy[oxidation_state][self.solvent][level] - \
-                neutral_geometry.solvation_energy[OxidationState.NEUTRAL][self.solvent][level]
+                ionized_geometry.solvation_energy[oxidation_state][self.solvent][self.solvation_level] - \
+                neutral_geometry.solvation_energy[OxidationState.NEUTRAL][self.solvent][self.solvation_level]
 
         # Compute the absolute potential using the Nerst equation
         n = get_charge(oxidation_state)
@@ -603,3 +549,83 @@ class RedoxEnergyRecipe(BaseModel):
         else:
             mol_data.oxidation_potential[self.name] = potential
         return potential
+
+    def get_required_calculations(self, record: MoleculeData,
+                                  oxidation_state: OxidationState,
+                                  previous_level: Optional['RedoxEnergyRecipe'] = None) \
+            -> List[Tuple[AccuracyLevel, str, int, Optional[str], bool]]:
+        """List the required computations to complete this recipe given the current information about a molecule
+
+        If this method returns relaxation calculations, then there may be more yet to perform after those complete
+        before one can evaluate the redox potential at the desired level of accuracy.
+        Calculations that use those input geometries may be needed
+
+        Args:
+            record: Information available about the molecule
+            oxidation_state: Oxidation state for the redox computation
+            previous_level: Previous level of accuracy, used to determine a starting point for relaxations
+        Returns:
+            List of required computations as tuples of
+                (level of accuracy,
+                 input XYZ structure,
+                 charge state,
+                 solvent,
+                 whether to relax)
+            All computations can be performed in parallel
+        """
+
+        # Required computations
+        required = []
+
+        # Get the neutral and oxidized charges
+        neutral_charge = get_baseline_charge(record.identifier['inchi'])
+        charged_charge = neutral_charge + (-1 if oxidation_state == oxidation_state.REDUCED else 1)
+
+        # Determine the starting point for relaxations, if required
+        #  We'll use geometries from the previous level of fidelity with priority over those at the current level
+        #   and procedurally-generated ones last
+        if previous_level is not None and previous_level.geometry_level in record.data:
+            neutral_start = record.data[previous_level.geometry_level][OxidationState.NEUTRAL].xyz
+            if oxidation_state in record.data[previous_level.geometry_level]:
+                charged_start = record.data[previous_level.geometry_level][oxidation_state].xyz
+            else:
+                charged_start = neutral_start
+        elif self.geometry_level not in record.data:
+            neutral_start = charged_start = generate_inchi_and_xyz(record.identifier['inchi'])[1]
+        else:
+            neutral_start = record.data[self.geometry_level][OxidationState.NEUTRAL].xyz
+            if oxidation_state in record.data[self.geometry_level]:
+                charged_start = record.data[self.geometry_level][oxidation_state].xyz
+            else:
+                charged_start = neutral_start
+
+        # Determine if any relaxations are needed
+        geom_level = self.geometry_level
+        if geom_level not in record.data or OxidationState.NEUTRAL not in record.data[geom_level]:
+            required.append((geom_level, neutral_start, neutral_charge, None, True))
+        if self.adiabatic and (geom_level not in record.data or oxidation_state not in record.data[geom_level]):
+            required.append((geom_level, charged_start, charged_charge, None, True))
+
+        # If any relaxations are triggered, then return the list now
+        if len(required) > 0:
+            return required
+
+        # Determine if any single-point calculations are required
+        neutral_geom_data = record.data[geom_level][OxidationState.NEUTRAL]
+        if self.adiabatic:
+            charged_geom_data = record.data[geom_level][oxidation_state]
+        else:
+            charged_geom_data = neutral_geom_data
+
+        for state, data, chg in zip([OxidationState.NEUTRAL, oxidation_state],
+                                    [neutral_geom_data, charged_geom_data],
+                                    [neutral_charge, charged_charge]):
+            if self.energy_level not in data.total_energy.get(state, {}):
+                required.append((self.energy_level, data.xyz, chg, None, False))
+            if self.solvent is not None and (
+                    self.solvent not in data.total_energy_in_solvent.get(state, {}) or
+                    self.solvation_level not in data.total_energy_in_solvent[state][self.solvent]
+            ):
+                required.append((self.energy_level, data.xyz, chg, self.solvent, False))
+
+        return required
