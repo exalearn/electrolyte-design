@@ -32,7 +32,7 @@ class MPNNMessage:
         self.weights = [np.array(v) for v in model.get_weights()]
 
         # Cached copy of the model
-        self._model = None
+        self._model = model
 
     def __getstate__(self):
         """Get all of state except the model"""

@@ -52,6 +52,7 @@ class TorchMessage:
         """
         if self.model is None:
             self.model = torch.load(BytesIO(self._pickle), map_location=map_location)
+            self.model.to(map_location)
             self._pickle = None
         else:
             self.model.to(map_location)
