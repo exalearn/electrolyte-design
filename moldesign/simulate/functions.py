@@ -79,7 +79,7 @@ def relax_structure(xyz: str,
                     qc_config: QCInputSpecification,
                     charge: int = 0,
                     compute_config: Optional[Union[TaskConfig, Dict]] = None,
-                    code: str = _code) -> Tuple[str, float, OptimizationResult]:
+                    code: str = _code) -> OptimizationResult:
     """Compute the atomization energy of a molecule given the SMILES string
 
     Args:
@@ -89,8 +89,6 @@ def relax_structure(xyz: str,
         compute_config (TaskConfig): Configuration for the quantum chemistry code, such as parallelization settings
         code (str): Which QC code to use for the evaluation
     Returns:
-        (str): Structure of the molecule
-        (float): Electronic energy of this molecule
         (OptimizationResult): Full output from the calculation
     """
 
@@ -107,9 +105,7 @@ def relax_structure(xyz: str,
     opt_input = OptimizationInput(input_specification=qc_config,
                                   initial_molecule=mol,
                                   keywords=keywords)
-    res = compute_procedure(opt_input, relax_code, local_options=compute_config, raise_error=True)
-
-    return res.final_molecule.to_string('xyz'), res.energies[-1], res
+    return compute_procedure(opt_input, relax_code, local_options=compute_config, raise_error=True)
 
 
 def compute_reference_energy(element: str, qc_config: QCInputSpecification,
