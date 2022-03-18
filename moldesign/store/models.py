@@ -213,7 +213,7 @@ class GeometryData(BaseModel):
                         self.solvation_energy[state] = {}
                     if solvent not in self.solvation_energy[state]:
                         self.solvation_energy[state][solvent] = {}
-                    self.solvation_energy[state][solvent][level] = vac_eng - solv_data[level]
+                    self.solvation_energy[state][solvent][level] = solv_data[level] - vac_eng
 
 
 class MoleculeData(BaseModel):
