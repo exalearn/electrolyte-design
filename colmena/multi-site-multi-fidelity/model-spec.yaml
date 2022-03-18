@@ -1,0 +1,14 @@
+oxidation_state: oxidized
+target_level: nob-acn-smb-geom
+model_levels:
+    - base_fidelity: smb-vacuum-vertical
+      model_type: schnet
+      model_pattern: ../../ai-components/ip-multi-fidelity/ip-acn-nob-adia-smb/adiabatic/**/best_model
+      max_models: 8
+      calibration: 1
+base_model:
+    base_fidelity: null
+    model_type: mpnn
+    model_pattern: ../../ai-components/ip-multi-fidelity/ip-acn-nob-adia-smb/vertical/**/best_model.h5
+    max_models: 8
+
