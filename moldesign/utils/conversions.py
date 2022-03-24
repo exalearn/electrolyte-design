@@ -166,3 +166,14 @@ def convert_string_to_dict(smiles: str) -> dict:
     """
     graph = convert_string_to_nx(smiles)
     return convert_nx_to_dict(graph)
+
+def convert_rdkit_to_dict(mol: 'Chem.Mol') -> dict:
+    """Convert RDKit molecule into an MPNN-ready dict
+
+    Args:
+        mol: Molecule to be converted
+    Returns:
+        (dict) Molecule as a dict
+    """
+    graph = convert_rdkit_to_nx(mol)
+    return convert_nx_to_dict(graph)

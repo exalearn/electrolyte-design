@@ -164,7 +164,8 @@ class MultiFidelitySearchSpecification(BaseModel):
             #  Use the geometry at the base level of fidelity, and select the charged geometry only if available
             xyz = f'data.{recipe.geometry_level}.{self.oxidation_state if recipe.adiabatic else "neutral"}.xyz'
         else:
-            raise NotImplementedError(f'No support for {model_type} yet')
+            #  Use the SMILES string
+            xyz = 'identifier.smiles'
 
         # Get the low-res level of fidelity
         low_res = 'oxidation_potential' if self.oxidation_state == OxidationState.OXIDIZED else 'reduction_potential'
@@ -255,7 +256,7 @@ class MultiFidelitySearchSpecification(BaseModel):
 
         # Get the first level to be found in the molecule
         current_level = None
-        for level in self.levels:
+        for level in self.levels[::-1]:
             if level in data:
                 current_level = level
                 break
