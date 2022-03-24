@@ -6,6 +6,11 @@ model_levels:
       model_pattern: ../../ai-components/ip-multi-fidelity/ip-acn-nob-adia-smb/adiabatic/**/best_model
       max_models: 8
       calibration: 1
+    - base_fidelity: smb-vacuum-no-zpe
+      model_type: schnet
+      model_pattern: ../../ai-components/ip-multi-fidelity/ip-acn-nob-adia-smb/normal/**/best_model
+      max_models: 8
+      calibration: 1
 base_model:
     base_fidelity: null
     model_type: mpnn

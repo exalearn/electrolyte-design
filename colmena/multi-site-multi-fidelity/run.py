@@ -96,23 +96,6 @@ class Thinker(BaseThinker):
         # Get the target database size
         self.n_to_evaluate = n_to_evaluate
 
-        # Load in space of allowed molecules
-        mols = pd.read_csv(self.search_space).sample(10000)
-        self.allowed_inchis = set(mols['inchi'])
-        self.logger.info(f'Read in a dataset of {len(self.allowed_inchis)} molecules')
-
-        # Store the search space as a dictionary mapping InChI to a parsed version
-        #  Make sure it includes only molecules that are not yet in the database
-        known_molecules = self.database.get_molecules()
-        self.unlabeled_molecules = dict(
-            (i, d) for i, d in
-            zip(mols['inchi'], mols['dict'].apply(json.loads))
-            if i not in known_molecules
-        )
-        self.logger.info(f'Identified {len(self.unlabeled_molecules)} molecules yet to be evaluated')
-
-        #
-
         # Inter-thread communication stuff
         self.start_inference = Event()  # Mark that inference should start
         self.start_training = Event()  # Mark that retraining should start
@@ -132,15 +115,15 @@ class Thinker(BaseThinker):
         self.already_ran = set()
 
         # Start with inference
-        self.start_inference.set()
-        for level in ['base'] + search_spec.levels[:-1]:
-            spec = search_spec.get_models(level)
-            n_models = len(spec.model_paths)
-            for i in range(n_models):
-                self.ready_models.put((level, i))
+#         self.start_inference.set()
+#         for level in ['base'] + search_spec.levels[:-1]:
+#             spec = search_spec.get_models(level)
+#             n_models = len(spec.model_paths)
+#             for i in range(n_models):
+#                 self.ready_models.put((level, i))
 
         # Start with training so that we ensure the models are as up-to-date as possible
-        # self.start_training.set()
+        self.start_training.set()
 
         # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
@@ -165,6 +148,9 @@ class Thinker(BaseThinker):
 
             # Determine what to run next
             next_step = self.search_spec.get_next_step(record)
+            if next_step is None:
+                self.logger.info(f'{next_task.inchi} is already complete. Skipping')
+                continue
             next_recipe = get_recipe_by_name(next_step)
             self.logger.info(f'Preparing to run calculations for {next_step}')
 
@@ -255,7 +241,7 @@ class Thinker(BaseThinker):
 
             # Store the data in a molecule data object
             data = self.database.get_molecule_record(inchi=inchi)
-            if method == 'perform_relaxation':
+            if method == 'relax_structure':
                 data.add_geometry(result.value)
             else:
                 data.add_single_point(result.value)
@@ -283,7 +269,7 @@ class Thinker(BaseThinker):
 
         # Write out the result to disk
         with open(self.output_dir.joinpath('simulation-results.json'), 'a') as fp:
-            print(result.json(exclude={'value'}), file=fp)
+            print(result.json(exclude={'inputs', 'value'}), file=fp)
         self.logger.info(f'Processed simulation task.')
 
     @event_responder(event_name='start_training')
@@ -295,6 +281,9 @@ class Thinker(BaseThinker):
         self.update_complete.clear()
         self.update_in_progress.set()
         self.num_training_complete = 0
+        
+        # Trigger the inference to begin, so that it gets time to prepare inference chunks
+        self.start_inference.set()
 
         # Start by sending the base models for training
         train_data = self.search_spec.get_base_training_set(self.database)
@@ -312,6 +301,11 @@ class Thinker(BaseThinker):
 
         # Next, send each level of the calibration models
         for level_id, level in enumerate(self.search_spec.model_levels):
+            # TODO (wardlt): For now, don't retrain these models. Just push them to infernece
+#             for model_id in range(len(level.model_paths)):
+#                 self.ready_models.put((level.base_fidelity, model_id))
+#             continue  # Skips actually training them
+            
             # Prepare the training set
             train_data = self.search_spec.get_calibration_training_set(level_id, self.database)
             self.logger.info(f'Pulled {len(train_data)} molecules to retrain {level.base_fidelity} calibrator')
@@ -320,17 +314,19 @@ class Thinker(BaseThinker):
 
             # Prepare the model messages
             model_msgs = list(level.load_all_model_messages())
-            if self.ps_names['train'] is not None:
-                model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(
-                    model_msgs, keys=[f'level-{level_id}-model-{i}' for i in range(len(model_msgs))]
-                )
+#             if self.ps_names['train'] is not None:
+#                 model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(
+#                     model_msgs, keys=[f'level-{level_id}-model-{i}' for i in range(len(model_msgs))]
+#                 )
 
-            for mid, model_msg in enumerate(model_msgs):
-                self.queues.send_inputs(model_msg, train_data,
-                                        method='train_schnet', topic='train',
-                                        task_info={'model_id': mid, 'level': level_id},
+            for mid, model_msg in enumerate(level.load_all_model_messages()):
+                self.queues.send_inputs(model_msg.get_model().get_config(), train_data,
+                                        method='retrain_mpnn', topic='train',
+                                        task_info={'model_id': mid, 'level': level.base_fidelity},
                                         keep_inputs=False,
-                                        input_kwargs={'random_state': mid, 'reset_weights': True})
+                                        input_kwargs={'random_state': mid})
+                
+        self.logger.info('Finished submitting training')
 
     @result_processor(topic='train')
     def update_weights(self, result: Result):
@@ -349,10 +345,16 @@ class Thinker(BaseThinker):
             self.logger.info(f'Training succeeded for level {level} model {model_id}')
 
             # Get the update message
-            message, history = result.value
+            output = result.value
+            assert str(output) != ""  # TODO (wardlt): Figure out if `iter` doesn't work with lazy_object_proxy
+            message, history = output
 
             # Update the model
-            model_collection = self.search_spec.base_model if level == 'base' else self.search_spec.model_levels[level]
+            if level == 'base':
+                model_collection = self.search_spec.base_model 
+            else:
+                level_id = self.search_spec.levels.index(level)
+                model_collection = self.search_spec.model_levels[level_id]
             model_collection.update_model(model_id, message)
             self.logger.info(f'Saved updated model to {model_collection.model_paths[model_id]}')
 
@@ -361,7 +363,6 @@ class Thinker(BaseThinker):
                 print(repr(history), file=fp)
 
         # Send the model to inference
-        self.start_inference.set()
         self.ready_models.put((level, model_id))
 
         # Mark that a model has finished training and trigger inference if all done
@@ -372,21 +373,35 @@ class Thinker(BaseThinker):
         """Submit inference tasks for the yet-unlabelled samples"""
 
         # Prepare storage for the inference results
-        self.inference_mols.clear()  # InChI strings of molecules. Key is the level
-        self.inference_results.clear()  # Placeholder for storing the result. Key is the level
         inference_inputs = defaultdict(list)  # Key is the level. Value is whatever is taken as inputs
         initial_value = defaultdict(list)  # Key is the level. Value is the value at the lower level of fidelity
+        
+         # Load in space of allowed molecules
+        mols = pd.read_csv(self.search_space)
+        mols.drop_duplicates('inchi', inplace=True)
+        allowed_inchis = set(mols['inchi'])
+        self.logger.info(f'Read in a dataset of {len(allowed_inchis)} molecules')
+
+        # Store the search space as a dictionary mapping InChI to a parsed version
+        #  Make sure it includes only molecules that are not yet in the database
+        known_molecules = self.database.get_molecules()
+        unlabeled_molecules = [
+            (i, d) for i, d in
+            zip(mols['inchi'], mols['dict'].apply(json.loads))
+            if i not in known_molecules
+        ]
+        self.logger.info(f'Identified {len(unlabeled_molecules)} molecules yet to be evaluated')
 
         # Store the unlabeled molecules first
-        self.inference_mols['base'].extend(self.unlabeled_molecules.keys())
-        inference_inputs['base'].extend(self.unlabeled_molecules.values())
+        self.inference_mols['base'].extend(x[0] for x in unlabeled_molecules)
+        inference_inputs['base'].extend(x[1] for x in unlabeled_molecules)
         initial_value['base'].extend([0.] * len(inference_inputs['base']))
         self.logger.info(f'Preparing to run inference on {len(initial_value["base"])} molecules')
 
         # Now add the ones from the database that have not finished computing the target property
         for record in self.database.collection.find({self.search_spec.target_property: {'$exists': False}}):
             record = MoleculeData.parse_obj(record)
-            if record.identifier['inchi'] not in self.allowed_inchis:
+            if record.identifier['inchi'] not in allowed_inchis:
                 continue
             current_step, inputs, init_value = self.search_spec.get_inference_inputs(record)
             self.inference_mols[current_step].append(record.identifier['inchi'])
@@ -445,7 +460,8 @@ class Thinker(BaseThinker):
     def selector(self):
         """Re-prioritize the machine learning tasks"""
 
-        self.logger.info(f'Waiting for inference tasks to be readied')
+        # Hold until the inference tasks are assembled
+        self.logger.info('Waiting for inference tasks to be readied')
         self.inference_ready.wait()
 
         #  Make arrays that will hold the output results from each run
@@ -480,7 +496,7 @@ class Thinker(BaseThinker):
             level = result.task_info.get('level')
             chunk_id = result.task_info.get('chunk_id')
             model_id = result.task_info.get('model_id')
-            y_preds[level][chunk_id][:, model_id] = np.squeeze(result.value)
+            y_preds[level][chunk_id][:, model_id] += np.squeeze(result.value)
             self.logger.info(f'Processed inference task {i + 1}/{n_tasks}. '
                              f'Level: {level}. Model: {model_id}. Chunk: {chunk_id}')
 
@@ -499,6 +515,9 @@ class Thinker(BaseThinker):
         results = pd.concat(results, ignore_index=True)
         self.logger.info(f'Collected a total of {len(results)} predictions')
         self._select_molecules(results)
+        
+        # Save the results
+        results.head(self.n_to_evaluate * 4).to_csv(self.output_dir / f'task-queue-{self.inference_batch}.csv', index=False)
 
         # Mark that inference is complete
         self.inference_batch += 1
@@ -519,7 +538,17 @@ class Thinker(BaseThinker):
 
         # Rank compounds according to the upper confidence bound
         results['ucb'] = results['mean'] + self.beta * results['std']
-        results.sort_values('ucb', ascending=False, inplace=True)
+        
+        # Promote the top N of each level and 
+        #  and N random ones from each level
+        results['score'] = -results['ucb']
+        best_score = results['score'].min()
+        for gid, group in results.groupby('level'):
+            results.loc[group.index[:4], 'score'] = best_score - 1
+            results.loc[group.sample(2).index, 'score'] = best_score - 1
+        results.sort_values('score', ascending=True, inplace=True)
+            
+        # Sort such that these promoted are at the top
 
         # Clear out the current task queue
         while not self.task_queue.empty():
@@ -530,12 +559,18 @@ class Thinker(BaseThinker):
         self.logger.info(f'Cleared out the current task queue')
 
         # Push the top tasks to the list
-        while self.task_queue.qsize() < self.n_to_evaluate * 4:
-            for rid, row in results.iterrows():
-                self.task_queue.put(
-                    _PriorityEntry(-row['ucb'], row['inchi'], row.to_dict())
-                )
+        for rid, row in results.iterrows():
+            self.task_queue.put(
+                _PriorityEntry(row['score'], row['inchi'], row.to_dict())
+            )
+            if self.task_queue.qsize() >= self.n_to_evaluate * 4:
+                break
         self.logger.info('Updated task list')
+        
+        # Clear out the old inference tasks now we're done
+        self.inference_mols.clear()  # InChI strings of molecules. Key is the level
+        self.inference_results.clear()  # Placeholder for storing the result. Key is the level
+     
 
 
 if __name__ == '__main__':
@@ -672,7 +707,7 @@ if __name__ == '__main__':
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
-    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128, cache=True)
+    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=512, cache=True)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
     my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True,
@@ -687,7 +722,7 @@ if __name__ == '__main__':
                                 bootstrap=True, timeout=2700, property_name='delta', device='cuda')
     my_retrain_schnet = update_wrapper(my_retrain_schnet, train_schnet)
 
-    my_evaluate_schnet = partial(evaluate_schnet, property_name='delta')
+    my_evaluate_schnet = partial(evaluate_schnet, property_name='delta', device='cuda')
     my_evaluate_schnet = update_wrapper(my_evaluate_schnet, evaluate_schnet)
 
     # Create the task servers
