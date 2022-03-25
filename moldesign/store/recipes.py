@@ -10,7 +10,7 @@ redox_recipes = [
     RedoxEnergyRecipe(name='smb-vacuum-vertical', geometry_level='small_basis',
                       energy_level='small_basis', adiabatic=False),
     RedoxEnergyRecipe(name='smb-acn-vertical', geometry_level='small_basis', solvent='acetntrl',
-                      energy_level='small_basis', solvation_level='normal_basis', adiabatic=False),
+                      energy_level='small_basis', solvation_level='small_basis', adiabatic=False),
     RedoxEnergyRecipe(name='smb-vacuum-no-zpe', geometry_level='small_basis',
                       energy_level='small_basis', adiabatic=True),
     RedoxEnergyRecipe(name='smb-vacuum', geometry_level='small_basis',
