@@ -115,15 +115,15 @@ class Thinker(BaseThinker):
         self.already_ran = set()
 
         # Start with inference
-#         self.start_inference.set()
-#         for level in ['base'] + search_spec.levels[:-1]:
-#             spec = search_spec.get_models(level)
-#             n_models = len(spec.model_paths)
-#             for i in range(n_models):
-#                 self.ready_models.put((level, i))
+        self.start_inference.set()
+        for level in ['base'] + search_spec.levels[:-1]:
+            spec = search_spec.get_models(level)
+            n_models = len(spec.model_paths)
+            for i in range(n_models):
+                self.ready_models.put((level, i))
 
         # Start with training so that we ensure the models are as up-to-date as possible
-        self.start_training.set()
+#        self.start_training.set()
 
         # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
@@ -160,10 +160,14 @@ class Thinker(BaseThinker):
                 previous_step_id = self.search_spec.levels.index(next_step) - 1
                 previous_recipe = get_recipe_by_name(self.search_spec.levels[previous_step_id])
 
+            # Update the task information with the actual step
+            next_task.item['level'] = next_step
+
             # Get the recipes
             try:
                 to_run = next_recipe.get_required_calculations(record, self.search_spec.oxidation_state, previous_recipe)
-            except ValueError:
+            except (KeyError, ValueError):
+                self.logger.warning(f'Task determination failed for {next_task.inchi} for {next_step}')
                 continue
             self.logger.info(f'{len(to_run)} more calculations required to complete {next_step}')
 
@@ -248,6 +252,22 @@ class Thinker(BaseThinker):
             data.update_thermochem()
             apply_recipes(data)
 
+            # If there are still more computations left to complete a level, re-add it to the priority queue
+            # This happens only if a new geometry was created
+            if method == 'relax_structure':
+                cur_recipe = get_recipe_by_name(result.task_info['level'])
+                try:
+                    to_run = cur_recipe.get_required_calculations(data, self.search_spec.oxidation_state)
+                except KeyError:
+                    to_run = []
+                if len(to_run) > 0:
+                    self.logger.info('Not yet done with the recipe. Re-adding to task queue')
+                    self.task_queue.put(_PriorityEntry(
+                        inchi=inchi,
+                        item=result.task_info,
+                        score=-np.inf  # Put it at the front of the queue
+                    ))
+
             # Attach the data source for the molecule
             data.subsets.append(self.search_space_name)
 
@@ -268,6 +288,7 @@ class Thinker(BaseThinker):
             self.logger.info(f'Computations failed for {inchi}. Check JSON file for stacktrace')
 
         # Write out the result to disk
+        result.task_info['inputs'] = str(result.inputs)
         with open(self.output_dir.joinpath('simulation-results.json'), 'a') as fp:
             print(result.json(exclude={'inputs', 'value'}), file=fp)
         self.logger.info(f'Processed simulation task.')
@@ -409,8 +430,8 @@ class Thinker(BaseThinker):
             inference_inputs[current_step].append(inputs)
 
         # Send out proxies for the inference inputs in chunks
-        inference_msgs = {}
-        inference_chunks = {}
+        inference_msgs = defaultdict(list)
+        inference_chunks = defaultdict(list)
         for level, inputs in inference_inputs.items():
             # Determine the number of inference batches to send out
             n_chunks = len(inputs) // self.inference_chunk_size + 1
@@ -537,11 +558,16 @@ class Thinker(BaseThinker):
         """
 
         # Rank compounds according to the upper confidence bound
-        results['ucb'] = results['mean'] + self.beta * results['std']
+        if self.search_spec.oxidation_state == 'oxidized':
+             results['ucb'] = results['mean'] + self.beta * results['std']
+             results['score'] = -results['ucb']
+        else:
+             results['ucb'] = results['mean'] - self.beta * results['std']
+             results['score'] = results['ucb']
+
         
         # Promote the top N of each level and 
         #  and N random ones from each level
-        results['score'] = -results['ucb']
         best_score = results['score'].min()
         for gid, group in results.groupby('level'):
             results.loc[group.index[:4], 'score'] = best_score - 1
