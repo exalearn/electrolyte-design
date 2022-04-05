@@ -112,6 +112,7 @@ class Thinker(BaseThinker):
             list)  # List of molecules run during inference at different levels
         self.inference_results: Dict[str, List[np.ndarray]] = defaultdict(list)  # Placeholder for inference results
         self.inference_ready = Barrier(2)  # When inference tasks are ready to be sent/received
+        self.failed_molecules = set()
         self.already_ran = set()
 
         # Start with inference
@@ -168,6 +169,7 @@ class Thinker(BaseThinker):
                 to_run = next_recipe.get_required_calculations(record, self.search_spec.oxidation_state, previous_recipe)
             except (KeyError, ValueError):
                 self.logger.warning(f'Task determination failed for {next_task.inchi} for {next_step}')
+                self.failed_molecules.add(next_task.inchi)
                 continue
             self.logger.info(f'{len(to_run)} more calculations required to complete {next_step}')
 
@@ -285,6 +287,7 @@ class Thinker(BaseThinker):
                 print(result.value.json(), file=fp)
             self.logger.info(f'Added complete calculation for {inchi} to database.')
         else:
+            self.failed_molecules.add(inchi)
             self.logger.info(f'Computations failed for {inchi}. Check JSON file for stacktrace')
 
         # Write out the result to disk
@@ -409,7 +412,7 @@ class Thinker(BaseThinker):
         unlabeled_molecules = [
             (i, d) for i, d in
             zip(mols['inchi'], mols['dict'].apply(json.loads))
-            if i not in known_molecules
+            if (i not in known_molecules) and (i not in self.failed_molecules)
         ]
         self.logger.info(f'Identified {len(unlabeled_molecules)} molecules yet to be evaluated')
 
@@ -422,7 +425,8 @@ class Thinker(BaseThinker):
         # Now add the ones from the database that have not finished computing the target property
         for record in self.database.collection.find({self.search_spec.target_property: {'$exists': False}}):
             record = MoleculeData.parse_obj(record)
-            if record.identifier['inchi'] not in allowed_inchis:
+            inchi = record.identifier['inchi']
+            if (inchi in self.failed_molecules) or (inchi not in allowed_inchis):
                 continue
             current_step, inputs, init_value = self.search_spec.get_inference_inputs(record)
             self.inference_mols[current_step].append(record.identifier['inchi'])
@@ -569,6 +573,7 @@ class Thinker(BaseThinker):
         # Promote the top N of each level and 
         #  and N random ones from each level
         best_score = results['score'].min()
+        results.sort_values('score', ascending=True, inplace=True)
         for gid, group in results.groupby('level'):
             results.loc[group.index[:4], 'score'] = best_score - 1
             results.loc[group.sample(2).index, 'score'] = best_score - 1
