@@ -8,6 +8,7 @@ from queue import Queue, PriorityQueue, Empty
 import argparse
 import logging
 import hashlib
+import gzip
 import json
 import sys
 import os
@@ -231,20 +232,6 @@ class Thinker(BaseThinker):
 
         # If successful, add to the database
         if result.success:
-            # Mark that we've had another complete result
-            self.n_evaluated += 1
-            self.logger.info(f'Success! Finished screening {self.n_evaluated}/{self.n_to_evaluate} molecules')
-
-            # Determine whether to start re-training
-            if self.n_evaluated % self.n_complete_before_retrain == 0:
-                if self.update_in_progress.is_set():
-                    self.logger.info(f'Waiting until previous training run completes.')
-                else:
-                    self.logger.info(f'Starting retraining.')
-                    self.start_training.set()
-            self.logger.info(f'{self.n_complete_before_retrain - self.n_evaluated % self.n_complete_before_retrain}'
-                             ' results needed until we re-train again')
-
             # Store the data in a molecule data object
             data = self.database.get_molecule_record(inchi=inchi)
             if method == 'relax_structure':
@@ -256,19 +243,33 @@ class Thinker(BaseThinker):
 
             # If there are still more computations left to complete a level, re-add it to the priority queue
             # This happens only if a new geometry was created
-            if method == 'relax_structure':
-                cur_recipe = get_recipe_by_name(result.task_info['level'])
-                try:
-                    to_run = cur_recipe.get_required_calculations(data, self.search_spec.oxidation_state)
-                except KeyError:
-                    to_run = []
-                if len(to_run) > 0:
-                    self.logger.info('Not yet done with the recipe. Re-adding to task queue')
-                    self.task_queue.put(_PriorityEntry(
-                        inchi=inchi,
-                        item=result.task_info,
-                        score=-np.inf  # Put it at the front of the queue
-                    ))
+            cur_recipe = get_recipe_by_name(result.task_info['level'])
+            try:
+                to_run = cur_recipe.get_required_calculations(data, self.search_spec.oxidation_state)
+            except KeyError:
+                to_run = []
+            if len(to_run) > 0:
+                self.logger.info('Not yet done with the recipe. Re-adding to task queue')
+                self.task_queue.put(_PriorityEntry(
+                    inchi=inchi,
+                    item=result.task_info,
+                    score=-np.inf  # Put it at the front of the queue
+                ))
+            else:
+                # Mark that we've had another complete result
+                self.n_evaluated += 1
+                self.logger.info(f'Success! Finished screening {self.n_evaluated}/{self.n_to_evaluate} molecules')
+
+                # Determine whether to start re-training
+                if self.n_evaluated % self.n_complete_before_retrain == 0:
+                    if self.update_in_progress.is_set():
+                        self.logger.info(f'Waiting until previous training run completes.')
+                    else:
+                        self.logger.info(f'Starting retraining.')
+                        self.start_training.set()
+                self.logger.info(f'{self.n_complete_before_retrain - self.n_evaluated % self.n_complete_before_retrain}'
+                                 ' results needed until we re-train again')
+
 
             # Attach the data source for the molecule
             data.subsets.append(self.search_space_name)
@@ -283,7 +284,7 @@ class Thinker(BaseThinker):
             self.database.update_molecule(data)
 
             # Write to disk
-            with open('qcfractal-records.json', 'a') as fp:
+            with gzip.open('qcfractal-records.json.gz', 'at') as fp:
                 print(result.value.json(), file=fp)
             self.logger.info(f'Added complete calculation for {inchi} to database.')
         else:
@@ -579,8 +580,6 @@ class Thinker(BaseThinker):
             results.loc[group.sample(2).index, 'score'] = best_score - 1
         results.sort_values('score', ascending=True, inplace=True)
             
-        # Sort such that these promoted are at the top
-
         # Clear out the current task queue
         while not self.task_queue.empty():
             try:
