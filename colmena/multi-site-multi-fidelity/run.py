@@ -117,15 +117,15 @@ class Thinker(BaseThinker):
         self.already_ran = set()
 
         # Start with inference
-        self.start_inference.set()
-        for level in ['base'] + search_spec.levels[:-1]:
-            spec = search_spec.get_models(level)
-            n_models = len(spec.model_paths)
-            for i in range(n_models):
-                self.ready_models.put((level, i))
+#        self.start_inference.set()
+#        for level in ['base'] + search_spec.levels[:-1]:
+#            spec = search_spec.get_models(level)
+#            n_models = len(spec.model_paths)
+#            for i in range(n_models):
+#                self.ready_models.put((level, i))
 
         # Start with training so that we ensure the models are as up-to-date as possible
-#        self.start_training.set()
+        self.start_training.set()
 
         # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
@@ -229,8 +229,10 @@ class Thinker(BaseThinker):
         # Unpack the task information
         inchi = result.task_info['inchi']
         method = result.method
+        level = result.task_info['level']
 
         # If successful, add to the database
+        self.logger.info(f'Completed {method} at {level} for {inchi}')
         if result.success:
             # Store the data in a molecule data object
             data = self.database.get_molecule_record(inchi=inchi)
@@ -248,14 +250,14 @@ class Thinker(BaseThinker):
                 to_run = cur_recipe.get_required_calculations(data, self.search_spec.oxidation_state)
             except KeyError:
                 to_run = []
-            if len(to_run) > 0:
+            if len(to_run) > 0 and result.method == 'relax_structure':
                 self.logger.info('Not yet done with the recipe. Re-adding to task queue')
                 self.task_queue.put(_PriorityEntry(
                     inchi=inchi,
                     item=result.task_info,
                     score=-np.inf  # Put it at the front of the queue
                 ))
-            else:
+            elif len(to_run) == 0:
                 # Mark that we've had another complete result
                 self.n_evaluated += 1
                 self.logger.info(f'Success! Finished screening {self.n_evaluated}/{self.n_to_evaluate} molecules')
