@@ -29,7 +29,7 @@ def build_fn(atom_features: int = 64, message_steps: int = 8,
     satom_types = Squeeze(axis=1)(atom_types)
     sbond_types = Squeeze(axis=1)(bond_types)
 
-    output = GraphNetwork(atom_type_count, bond_type_count, atom_features, message_steps,
+    output = GraphNetwork(35, 4, atom_features, message_steps,
                           output_layer_sizes=output_layers,
                           atomic_contribution=True, reduce_function='sum',
                           name='mpnn')([satom_types, sbond_types, snode_graph_indices, connectivity])
@@ -68,12 +68,6 @@ if __name__ == "__main__":
     test_loader = make_data_loader('test_data.proto', batch_size=args.batch_size, output_property='u0_atom')
     val_loader = make_data_loader('valid_data.proto', batch_size=args.batch_size, output_property='u0_atom')
 
-    # Load in the bond and atom type information
-    with open('atom_types.json') as fp:
-        atom_type_count = len(json.load(fp))
-    with open('bond_types.json') as fp:
-        bond_type_count = len(json.load(fp))
-
     # Make the model
     model = build_fn(atom_features=args.atom_features, message_steps=args.num_messages,
                      output_layers=args.output_layers)
@@ -104,7 +98,7 @@ if __name__ == "__main__":
     )
 
     # Run on the validation set and assess statistics
-    y_true = np.hstack([x[1].numpy()[:, 0] for x in iter(test_loader)])
+    y_true = np.hstack([np.squeeze(x[1].numpy()) for x in iter(test_loader)])
     y_pred = np.squeeze(model.predict(test_loader))
 
     pd.DataFrame({'true': y_true, 'pred': y_pred}).to_csv(os.path.join(test_dir, 'test_results.csv'), index=False)
