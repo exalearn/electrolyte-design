@@ -579,7 +579,7 @@ class RedoxEnergyRecipe(BaseModel):
 
         # Get the neutral and oxidized charges
         neutral_charge = get_baseline_charge(record.identifier['inchi'])
-        charged_charge = neutral_charge + (-1 if oxidation_state == oxidation_state.REDUCED else 1)
+        charged_charge = neutral_charge + (-1 if oxidation_state == OxidationState.REDUCED else 1)
 
         # Determine the starting point for relaxations, if required
         #  We'll use geometries from the previous level of fidelity with priority over those at the current level

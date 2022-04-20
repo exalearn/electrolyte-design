@@ -1,6 +1,5 @@
 """Functions for updating and performing bulk inference using an Keras MPNN model"""
 from pathlib import Path
-from functools import partial
 from typing import List, Dict, Tuple, Union, Optional
 
 import numpy as np
@@ -8,7 +7,7 @@ import tensorflow as tf
 from tensorflow.keras import callbacks as cb
 
 from moldesign.utils.globals import get_process_pool
-from moldesign.score.mpnn.callbacks import LRLogger, EpochTimeLogger, TimeLimitCallback
+from moldesign.utils.callbacks import LRLogger, EpochTimeLogger, TimeLimitCallback
 from moldesign.score.mpnn.data import _merge_batch, GraphLoader
 from moldesign.score.mpnn.layers import custom_objects
 from moldesign.utils.conversions import convert_string_to_dict
