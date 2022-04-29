@@ -9,6 +9,7 @@ from datetime import datetime
 import argparse
 import logging
 import json
+import bz2
 
 from colmena.redis.queue import make_queue_pairs, ClientQueues
 from colmena.task_server import ParslTaskServer
@@ -46,7 +47,7 @@ def parsl_config(name: str) -> Tuple[Config, int]:
                     address=address_by_hostname(),
                     label="debug",
                     max_workers=64,
-                    prefetch_capacity=2,
+                    prefetch_capacity=64,
                     cpu_affinity='block',
                     provider=CobaltProvider(
                         account='redox_adsp',
@@ -85,7 +86,7 @@ class ScreenEngine(BaseThinker):
     def __init__(self,
                  queues: ClientQueues,
                  store: ps.store.remote.RemoteStore,
-                 screen_path: Path,
+                 screen_paths: List[Path],
                  output_dir: Path,
                  slot_count: int,
                  chunk_size: int
@@ -95,7 +96,7 @@ class ScreenEngine(BaseThinker):
         self.rec.reallocate(None, 'screen', 'all')
 
         # Store the input and output information
-        self.screen_path = screen_path
+        self.screen_paths = screen_paths
         self.output_dir = output_dir
         self.chunk_size = chunk_size
         self.store = store
@@ -123,16 +124,35 @@ class ScreenEngine(BaseThinker):
             
             # Put the proxy and the key in the queue
             self.screen_queue.put((chunk_proxy, key))
+        
+        # Loop over all files
+        chunk = []
+        for i, path in enumerate(self.screen_paths):
+            self.logger.info(f'Reading from file {i+1}/{len(self.screen_paths)}: {path}')
             
-
-        with self.screen_path.open() as fp:
+            # Open the file
+            if path.suffix == '.bz2':
+                fp = bz2.open(path, 'rt')
+            else:
+                fp = path.open()
+            
+            # Start the chunks
             chunk = []
             for line in fp:
                 try:
-                    # The line is comma-separated with the last entry as the string
-                    _, smiles = line.rsplit(",", 1)
+                    if path.suffix == '.csv':
+                        # The line is comma-separated with the last entry as the string
+                        _, smiles = line.strip().rsplit(",", 1)
+                    elif path.suffix == '.smi':
+                        # The line is just a SMILES string
+                        smiles = line.strip()
+                    elif path.suffix == '.bz2':
+                        # The SMILES string is the first entry
+                        smiles, _ = line.split("\t", 1)
+                    else:
+                        raise ValueError(f'Extension "{path.suffix}" not recognized for "')
                 except:
-                    continue
+                    raise
                 self.total_molecules += 1
 
                 # Add to the chunk and submit if we hit the target size
@@ -140,8 +160,8 @@ class ScreenEngine(BaseThinker):
                 if len(chunk) >= self.chunk_size:
                     _proxy_and_push(chunk)
                     chunk = []
-                    
-        # Submit whatever remains
+            fp.close()
+
         _proxy_and_push(chunk)
 
         # Put a None at the end to signal we are done
@@ -218,13 +238,20 @@ class ScreenEngine(BaseThinker):
         self.logger.info(f'Runtime {run_time:.2f} s. Evaluation rate: {self.total_molecules / run_time:.3e} mol/s')
 
 
-def screen_molecules(to_screen: List[str], max_molecular_weight: float, forbidden_smarts: List[str], allowed_elements: Set[str]) -> List[str]:
+def screen_molecules(
+    to_screen: List[str],
+    max_molecular_weight: float,
+    forbidden_smarts: List[str],
+    required_smarts: List[str],
+    allowed_elements: Set[str],
+) -> List[str]:
     """Screen molecules that pass molecular weights and substructure filters
 
     Args:
         to_screen: List of SMILES strings to string
         max_molecular_weight: Maximum molecular weight (g/mol)
         forbidden_smarts: List of SMARTS that cannot appear in a molecule
+        required_smarts: List of SMARTS that must appear in the molecule
         allowed_elements: List of allowed elements
     """
     import json
@@ -234,7 +261,8 @@ def screen_molecules(to_screen: List[str], max_molecular_weight: float, forbidde
     from moldesign.utils.conversions import convert_rdkit_to_dict
 
     # Pre-parse the SMARTS strings
-    smarts = [Chem.MolFromSmarts(s) for s in forbidden_smarts]
+    forbidden_smarts = [Chem.MolFromSmarts(s) for s in forbidden_smarts]
+    required_smarts = [Chem.MolFromSmarts(s) for s in required_smarts]
 
     passed = []
     for smiles in to_screen:
@@ -255,7 +283,14 @@ def screen_molecules(to_screen: List[str], max_molecular_weight: float, forbidde
         
         # Skip if it contains a disallowed group
         try:
-            if any(mol.HasSubstructMatch(s) for s in smarts):
+            if any(mol.HasSubstructMatch(s) for s in forbidden_smarts):
+                continue
+        except:
+            continue
+        
+        # Skip if it does not contain all of the allowed groups
+        try:
+            if not all(mol.HasSubstructMatch(s) for s in required_smarts):
                 continue
         except:
             continue
@@ -285,7 +320,8 @@ if __name__ == '__main__':
                         help="Address at which the redis server can be reached")
     parser.add_argument("--redisport", default="6379",
                         help="Port on which redis is available")
-    parser.add_argument('--search-space', help='Path to molecules to be screened', required=True)
+    parser.add_argument('--search-spaces', nargs='+', help='Path(s) to molecules to be screened', required=True)
+    parser.add_argument('--name', help='Name for the run')
     parser.add_argument('--max-molecular-weight', default=150, help='Maximum allowed molecular weight. Units: g/mol. Default based on doi: 10.1039/C4EE02158D',
                         type=float)
     parser.add_argument("--molecules-per-chunk", default=50000, type=int, help="Number molecules per screening task")
@@ -299,8 +335,8 @@ if __name__ == '__main__':
     run_params = args.__dict__
 
     # Check that the search path exists
-    search_path = Path(args.search_space)
-    assert search_path.is_file()
+    search_paths = [Path(x) for x in args.search_spaces]
+    assert all(x.is_file() for x in search_paths)
 
     # Load in the name screening parameters
     screen_params_path = Path(args.screening_parameters)
@@ -311,16 +347,21 @@ if __name__ == '__main__':
     for smarts in screen_params['bad_smarts']:
         if Chem.MolFromSmarts(smarts) is None:
             raise ValueError(f'Invalid SMARTS: {smarts}')
+            
+    # Determine a name for the name
+    name = search_paths[0].name[:-4]
+    if args.name is not None:
+        name = args.name
     
     # Create an output directory with the name of the directory
-    out_path = Path().joinpath('runs', f'{search_path.name[:-4]}-molwt={args.max_molecular_weight}-params={screen_params_path.name[:-4]}')
+    out_path = Path().joinpath('runs', f'{name}-molwt={args.max_molecular_weight}-params={screen_params_path.name[:-4]}')
     out_path.mkdir(parents=True, exist_ok=args.overwrite)
     
     # Store the run parameters
     with open(out_path / 'screen-params.yaml', 'w') as fp:
         fp.write(screen_params_path.read_text())
     with open(out_path / 'run-config.json', 'w') as fp:
-        json.dumps(run_params, indent=2)
+        json.dump(run_params, fp, indent=2)
     
     # Set up the logging
     handlers = [logging.FileHandler(out_path / 'runtime.log', mode='w'), logging.StreamHandler(sys.stdout)]
@@ -340,7 +381,10 @@ if __name__ == '__main__':
                         level=logging.INFO, handlers=handlers)
 
     # Prepare the screening function
-    screen_fun = partial(screen_molecules, max_molecular_weight=args.max_molecular_weight, forbidden_smarts=screen_params['bad_smarts'],
+    screen_fun = partial(screen_molecules, 
+                         max_molecular_weight=args.max_molecular_weight,
+                         forbidden_smarts=screen_params['bad_smarts'],
+                         required_smarts=screen_params.get('required_smarts', []),
                          allowed_elements=set(screen_params['allowed_elements']))
     update_wrapper(screen_fun, screen_molecules)
 
@@ -358,12 +402,13 @@ if __name__ == '__main__':
         raise ValueError('ProxyStore config not recognized: {}')
 
     # Make the task queues and task server
-    client_q, server_q = make_queue_pairs(args.redishost, args.redisport, keep_inputs=False, serialization_method='pickle',
+    client_q, server_q = make_queue_pairs(args.redishost, args.redisport, name='jscreen', 
+                                          keep_inputs=False, serialization_method='pickle',
                                           proxystore_threshold=1000, proxystore_name=store.name)
     task_server = ParslTaskServer([screen_fun], server_q, config)
 
     # Make the thinker
-    thinker = ScreenEngine(client_q, store, search_path, out_path, n_slots, args.molecules_per_chunk)
+    thinker = ScreenEngine(client_q, store, search_paths, out_path, n_slots, args.molecules_per_chunk)
 
     # Run the program
     try:
