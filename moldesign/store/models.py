@@ -1,6 +1,6 @@
 """Data models for storing molecular property data"""
 from hashlib import sha1
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple, Any
 from enum import Enum
 
 import numpy as np
@@ -294,7 +294,25 @@ class MoleculeData(BaseModel):
             return Chem.MolFromInchi(self.identifier['inchi'])
         else:
             raise ValueError('No identifiers are compatible with RDKit')
-
+            
+            
+    def get_data(self, field_name: str) -> Any:
+        """Get the value for a certain field
+        
+        Args:
+            field_name: Name fo the field with "." separating different levels
+        Returns:
+            Value of that field
+        """
+        
+        keys = field_name.split(".")
+        data = self.dict()
+        for i, key in enumerate(keys):
+            if key not in data:
+                raise KeyError(f'Field not found: {".".join(keys[:i+1])}')
+            data = data[key]
+        return data
+            
     def add_all_identifiers(self):
         """Set all possible identifiers for a molecule"""
 
