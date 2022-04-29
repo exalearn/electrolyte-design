@@ -23,8 +23,6 @@ dependencies:
   - qcengine==0.18.*
   - rdkit==2019.09.3
   - tensorflow-mkl==2.4.1
-  - pytorch==1.9.0
-  - cpuonly
   - qcfractal==0.15.*
   - py-cpuinfo<6
   - msgpack-python==1.*
