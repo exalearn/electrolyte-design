@@ -22,7 +22,7 @@ redox_recipes = [
     RedoxEnergyRecipe(name='dfb-vacuum-smb-geom', geometry_level='small_basis',
                       energy_level='diffuse_basis', adiabatic=True),
     RedoxEnergyRecipe(name='dfb-acn-smb-geom', solvent='acetntrl', geometry_level='small_basis',
-                      energy_level='diffuse_basis', adiabatic=True),
+                      energy_level='diffuse_basis', solvation_level='diffuse_basis', adiabatic=True),
 ]
 
 

@@ -545,6 +545,7 @@ class RedoxEnergyRecipe(BaseModel):
                        neutral_geometry.zpe[OxidationState.NEUTRAL][self.energy_level]
 
         # Adjust with solvation energy, if required
+        assert (self.solvation_level is not None) == (self.solvent is not None), "You must define both solvation_level and solvent"
         if self.solvation_level is not None and self.solvent is not None:
             if self.solvation_level not in \
                     neutral_geometry.total_energy_in_solvent[OxidationState.NEUTRAL][self.solvent]:
