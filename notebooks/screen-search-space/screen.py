@@ -50,7 +50,7 @@ def parsl_config(name: str) -> Tuple[Config, int]:
                     prefetch_capacity=64,
                     cpu_affinity='block',
                     provider=CobaltProvider(
-                        account='redox_adsp',
+                        account='CSC249ADCD08',
                         queue='debug-flat-quad',
                         nodes_per_block=8,
                         scheduler_options='#COBALT --attrs enable_ssh=1',
@@ -142,7 +142,11 @@ class ScreenEngine(BaseThinker):
                 try:
                     if path.suffix == '.csv':
                         # The line is comma-separated with the last entry as the string
-                        _, smiles = line.strip().rsplit(",", 1)
+                        try:
+                            _, smiles = line.strip().rsplit(",", 1)
+                        except ValueError: 
+                            self.logger.warning(f'Parsing failed for "{line}"')
+                            continue
                     elif path.suffix == '.smi':
                         # The line is just a SMILES string
                         smiles = line.strip()
@@ -196,7 +200,7 @@ class ScreenEngine(BaseThinker):
         num_recorded = 0
         total_passed = 0
         with open(self.output_dir / "screened_molecules.csv", 'w') as fp, open(self.output_dir / 'inference-results.json', 'w') as fq:
-            writer = DictWriter(fp, ['inchi', 'smiles', 'molwt', 'dict'])
+            writer = DictWriter(fp, ['inchi', 'smiles', 'molwt', 'nconj', 'dict'])
             writer.writeheader()
             while True:
                 # Stop when all have been recorded
@@ -244,6 +248,7 @@ def screen_molecules(
     forbidden_smarts: List[str],
     required_smarts: List[str],
     allowed_elements: Set[str],
+    min_conjugation: int,
 ) -> List[str]:
     """Screen molecules that pass molecular weights and substructure filters
 
@@ -265,6 +270,29 @@ def screen_molecules(
     required_smarts = [Chem.MolFromSmarts(s) for s in required_smarts]
 
     passed = []
+    
+    # Function for counting conjugation
+    def count_conj(mol):
+        """Count the number of conjugated bonds in a molecule
+
+        Assumes they are all part of the same group
+
+        Args:
+            mol: Molecule to evaluate
+        Returns:
+            Number of conjugated bonds
+        """
+
+        # Check if any are conjugated
+        is_conj = [bond.GetIsConjugated() for bond in mol.GetBonds()]
+
+        # If any are conjugated, count the number of multiple bonds
+        if any(is_conj):
+            kekul_mol = Chem.Kekulize(mol, True)
+            return sum(i and bond.GetBondTypeAsDouble() >= 2 for i, bond in zip(is_conj, mol.GetBonds()))
+        else:
+            return 0
+
     for smiles in to_screen:
         mol = Chem.MolFromSmiles(smiles)
 
@@ -295,6 +323,11 @@ def screen_molecules(
         except:
             continue
             
+        # Skip if does not have enough conjugated bonds
+        n_conj = count_conj(mol)
+        if n_conj < min_conjugation:
+            continue
+            
         # Parse it into dictionary format
         mol = Chem.AddHs(mol)
         moldict = convert_rdkit_to_dict(mol)
@@ -307,6 +340,7 @@ def screen_molecules(
             'smiles': smiles,
             'inchi': Chem.MolToInchi(mol),
             'molwt': mol_wt,
+            'nconj': n_conj,
             'dict': json.dumps(moldict)
         })
 
@@ -385,7 +419,8 @@ if __name__ == '__main__':
                          max_molecular_weight=args.max_molecular_weight,
                          forbidden_smarts=screen_params['bad_smarts'],
                          required_smarts=screen_params.get('required_smarts', []),
-                         allowed_elements=set(screen_params['allowed_elements']))
+                         allowed_elements=set(screen_params['allowed_elements']),
+                         min_conjugation=screen_params['min_conjugation'])
     update_wrapper(screen_fun, screen_molecules)
 
     # Make Parsl engine
